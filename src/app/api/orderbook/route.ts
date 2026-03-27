@@ -136,7 +136,8 @@ async function fetchBinance(asset: string): Promise<OrderBookResponse> {
 
   try {
     const res = await fetch(
-      `https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=1000`
+      `https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=1000`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
     );
     const data = await res.json();
 
@@ -237,17 +238,17 @@ async function fetchCoinbase(asset: string): Promise<OrderBookResponse> {
 // ─── LIGHTER ───────────────────────────────────────────────────
 
 async function fetchLighter(asset: string): Promise<OrderBookResponse> {
-  // Lighter uses market IDs — we need to look them up
-  const symbolMap: Record<string, string | null> = {
-    BTC: "1",
-    ETH: "2",
+  // Lighter market IDs: ETH=0, BTC=1
+  const marketIdMap: Record<string, number | null> = {
+    BTC: 1,
+    ETH: 0,
     XAU: null,
     WTI: null,
     XAG: null,
   };
 
-  const marketId = symbolMap[asset];
-  if (!marketId) {
+  const marketId = marketIdMap[asset];
+  if (marketId === null || marketId === undefined) {
     return {
       exchange: "lighter",
       asset,
@@ -260,20 +261,20 @@ async function fetchLighter(asset: string): Promise<OrderBookResponse> {
 
   try {
     const res = await fetch(
-      `https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails?market_id=${marketId}&limit=500`
+      `https://mainnet.zklighter.elliot.ai/api/v1/orderBookOrders?market_id=${marketId}&limit=250`
     );
     const data = await res.json();
 
     const bids: OrderBookLevel[] = (data.bids || []).map(
-      (l: { price: string; quantity: string }) => ({
+      (l: { price: string; remaining_base_amount: string }) => ({
         price: parseFloat(l.price),
-        size: parseFloat(l.quantity),
+        size: parseFloat(l.remaining_base_amount),
       })
     );
     const asks: OrderBookLevel[] = (data.asks || []).map(
-      (l: { price: string; quantity: string }) => ({
+      (l: { price: string; remaining_base_amount: string }) => ({
         price: parseFloat(l.price),
-        size: parseFloat(l.quantity),
+        size: parseFloat(l.remaining_base_amount),
       })
     );
 
@@ -293,17 +294,69 @@ async function fetchLighter(asset: string): Promise<OrderBookResponse> {
 // ─── OSTIUM ────────────────────────────────────────────────────
 
 async function fetchOstium(asset: string): Promise<OrderBookResponse> {
-  // Ostium is oracle-based — no traditional order book
-  // We return an empty book with an explanatory note
-  // Slippage on Ostium is a function of LP exposure, not order book depth
-  return {
-    exchange: "ostium",
-    asset,
-    bids: [],
-    asks: [],
-    timestamp: Date.now(),
-    error: "Oracle-based pricing — no order book. Slippage is function of LP exposure, not book depth.",
+  // Ostium is oracle-based — slippage = oracle bid/ask spread (not size-dependent).
+  // We build a synthetic order book with a single massive level at the oracle bid/ask
+  // so the slippage calculator reflects the true execution cost.
+  const assetMap: Record<string, string> = {
+    BTC: "BTCUSD",
+    ETH: "ETHUSD",
+    XAU: "XAUUSD",
+    WTI: "CLUSD", // Ostium uses CL (crude light) for WTI
+    XAG: "XAGUSD",
   };
+
+  const ostiumAsset = assetMap[asset];
+  if (!ostiumAsset) {
+    return {
+      exchange: "ostium",
+      asset,
+      bids: [],
+      asks: [],
+      timestamp: Date.now(),
+      error: "Asset not available on Ostium",
+    };
+  }
+
+  try {
+    const res = await fetch(
+      `https://metadata-backend.ostium.io/PricePublish/latest-price?asset=${ostiumAsset}`
+    );
+    const data = await res.json();
+
+    if (!data.bid || !data.ask) {
+      return {
+        exchange: "ostium",
+        asset,
+        bids: [],
+        asks: [],
+        timestamp: Date.now(),
+        error: "No price data from Ostium oracle",
+      };
+    }
+
+    const bid = parseFloat(data.bid);
+    const ask = parseFloat(data.ask);
+
+    // Synthetic depth: $1B notional at oracle prices — slippage is spread-only, not size-dependent
+    const largeSize = 1_000_000_000 / ask;
+
+    return {
+      exchange: "ostium",
+      asset,
+      bids: [{ price: bid, size: largeSize }],
+      asks: [{ price: ask, size: largeSize }],
+      timestamp: Date.now(),
+    };
+  } catch (e) {
+    return {
+      exchange: "ostium",
+      asset,
+      bids: [],
+      asks: [],
+      timestamp: Date.now(),
+      error: String(e),
+    };
+  }
 }
 
 // ─── ROUTE HANDLER ─────────────────────────────────────────────

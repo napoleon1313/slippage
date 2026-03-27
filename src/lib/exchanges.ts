@@ -87,7 +87,7 @@ export const EXCHANGES: ExchangeConfig[] = [
       WTI: "WTI/USD",
       XAG: "XAG/USD",
     },
-    hasOrderBook: false, // Oracle-based
+    hasOrderBook: true, // Oracle-based but we use synthetic depth via price API
   },
 ];
 
