@@ -70,6 +70,20 @@ export const EXCHANGES: ExchangeConfig[] = [
     },
     hasOrderBook: true,
   },
+  {
+    id: "binance",
+    name: "Binance",
+    type: "cex",
+    color: "#f0b90b",
+    takerFeeBps: 5.0, // Standard futures taker fee (0.05%)
+    symbols: {
+      BTC: "BTCUSDT",
+      ETH: "ETHUSDT",
+      XAU: "XAUUSDT", // Gold confirmed live on Binance futures
+      WTI: null,       // Not available on Binance futures
+    },
+    hasOrderBook: true,
+  },
 ];
 
 export const ASSETS = [

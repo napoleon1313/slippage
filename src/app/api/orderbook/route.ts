@@ -233,6 +233,72 @@ async function fetchLighter(asset: string, symbolOverride?: string): Promise<Ord
   }
 }
 
+// ─── BINANCE ───────────────────────────────────────────────────
+
+async function fetchBinance(asset: string, symbolOverride?: string): Promise<OrderBookResponse> {
+  const symbolMap: Record<string, string | null> = {
+    BTC: "BTCUSDT",
+    ETH: "ETHUSDT",
+    XAU: "XAUUSDT", // Gold confirmed live on Binance futures (~$4,487)
+    WTI: null,       // Not available on Binance futures
+  };
+
+  const symbol = symbolOverride || symbolMap[asset];
+  if (!symbol) {
+    return {
+      exchange: "binance",
+      asset,
+      bids: [],
+      asks: [],
+      timestamp: Date.now(),
+      error: "Asset not available on Binance futures",
+    };
+  }
+
+  try {
+    const res = await fetch(
+      `https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=1000`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
+    );
+    const data = await res.json();
+
+    if (data.code && data.msg) {
+      return {
+        exchange: "binance",
+        asset,
+        bids: [],
+        asks: [],
+        timestamp: Date.now(),
+        error: `Binance error: ${data.msg}`,
+      };
+    }
+
+    const bids: OrderBookLevel[] = (data.bids || []).map(
+      (l: [string, string]) => ({
+        price: parseFloat(l[0]),
+        size: parseFloat(l[1]),
+      })
+    );
+    const asks: OrderBookLevel[] = (data.asks || []).map(
+      (l: [string, string]) => ({
+        price: parseFloat(l[0]),
+        size: parseFloat(l[1]),
+      })
+    );
+
+    return { exchange: "binance", asset, bids, asks, timestamp: Date.now() };
+  } catch (e) {
+    return {
+      exchange: "binance",
+      asset,
+      bids: [],
+      asks: [],
+      timestamp: Date.now(),
+      error: String(e),
+    };
+  }
+}
+
 // ─── ASTER ─────────────────────────────────────────────────────
 // Aster DEX uses a Binance-compatible REST API at fapi.asterdex.com
 // Symbols: BTCUSDT, ETHUSDT, XAUUSDT (Gold), CLUSDT (WTI crude)
@@ -332,6 +398,9 @@ export async function GET(request: NextRequest) {
     case "aster":
       result = await fetchAster(asset, symbolOverride);
       break;
+    case "binance":
+      result = await fetchBinance(asset, symbolOverride);
+      break;
     default:
       return NextResponse.json(
         { error: `Unknown exchange: ${exchange}` },
@@ -362,6 +431,7 @@ export async function POST(request: NextRequest) {
     coinbase: fetchCoinbase,
     lighter: fetchLighter,
     aster: fetchAster,
+    binance: fetchBinance,
   };
 
   const results = await Promise.all(
