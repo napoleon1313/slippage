@@ -21,8 +21,8 @@ async function fetchHyperliquid(asset: string, symbolOverride?: string): Promise
   const hlMap: Record<string, string> = {
     BTC: "BTC",
     ETH: "ETH",
-    XAU: "GOLD",
-    WTI: "OIL",
+    XAU: "xyz:GOLD", // RWA market prefix required
+    WTI: "xyz:CL",  // WTI crude light, RWA market prefix required
   };
 
   const coin = symbolOverride || hlMap[asset] || asset;

@@ -51,8 +51,8 @@ export const EXCHANGES: ExchangeConfig[] = [
     symbols: {
       BTC: "BTC",
       ETH: "ETH",
-      XAU: "GOLD", // Gold on Hyperliquid
-      WTI: "OIL",  // WTI crude on Hyperliquid
+      XAU: "xyz:GOLD", // Gold — RWA market, xyz: prefix required
+      WTI: "xyz:CL",   // WTI crude light — RWA market, xyz: prefix required
     },
     hasOrderBook: true,
   },
