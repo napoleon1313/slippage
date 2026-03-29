@@ -405,7 +405,7 @@ export default function Dashboard() {
       {/* Header */}
       <div className="mb-6">
         <p className="text-xs uppercase tracking-widest mb-1" style={{ color: "var(--text-secondary)" }}>
-          KPMG Crypto CoE — Execution Cost Research
+          Crypto CoE — Execution Cost Research
         </p>
         <h1 className="text-2xl font-bold">Perp Exchange Slippage Dashboard</h1>
         <p className="text-sm mt-1" style={{ color: "var(--text-secondary)" }}>
@@ -971,7 +971,7 @@ export default function Dashboard() {
 
       {/* Footer */}
       <div className="mt-6 text-xs text-center" style={{ color: "var(--text-secondary)" }}>
-        KPMG Canada — Crypto Centre of Excellence — Execution Cost Research |
+        Crypto Centre of Excellence — Execution Cost Research |
         Built March 2026
       </div>
     </div>
