@@ -77,6 +77,13 @@ function buildAllAssets(customAssets: CustomAsset[]) {
   return [...base, ...custom];
 }
 
+// xyz: prefix on Hyperliquid = HIP-3 Growth Market (0.45 bps default taker fee)
+const HIP3_FEE_BPS = 0.45;
+function isHip3Asset(assetId: string): boolean {
+  const hl = EXCHANGES.find((e) => e.id === "hyperliquid");
+  return hl?.symbols[assetId]?.startsWith("xyz:") ?? false;
+}
+
 // ─── Main Component ────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -146,6 +153,10 @@ export default function Dashboard() {
       // HIP-3 per-asset override (Hyperliquid only)
       if (exchangeId === "hyperliquid" && assetId && hip3Overrides[assetId] !== undefined) {
         return hip3Overrides[assetId];
+      }
+      // HIP-3 xyz: market default — 0.45 bps for all Growth Markets
+      if (exchangeId === "hyperliquid" && assetId && isHip3Asset(assetId)) {
+        return HIP3_FEE_BPS;
       }
       // Global per-exchange override
       if (feeOverrides[exchangeId] !== undefined) return feeOverrides[exchangeId];
@@ -541,7 +552,9 @@ export default function Dashboard() {
             <div className="flex flex-wrap gap-3">
               {allAssets.filter((a) => enabledAssets.includes(a.id)).map((asset) => {
                 const hlExchange = EXCHANGES.find((e) => e.id === "hyperliquid");
-                const defaultFee = feeOverrides["hyperliquid"] ?? hlExchange?.takerFeeBps ?? 4.5;
+                const defaultFee = isHip3Asset(asset.id)
+                  ? HIP3_FEE_BPS  // xyz: Growth Markets default to 0.45 bps
+                  : (feeOverrides["hyperliquid"] ?? hlExchange?.takerFeeBps ?? 4.5);
                 return (
                   <div key={asset.id} className="flex items-center gap-1">
                     <span className="text-xs px-2 py-1 rounded font-medium" style={{ background: "var(--bg-secondary)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}>
