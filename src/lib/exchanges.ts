@@ -15,6 +15,34 @@ export interface ExchangeConfig {
 
 export const EXCHANGES: ExchangeConfig[] = [
   {
+    id: "lighter",
+    name: "Lighter",
+    type: "dex",
+    color: "#facc15",
+    takerFeeBps: 0, // Zero fee for standard accounts
+    symbols: {
+      BTC: "1",    // market_id=1
+      ETH: "0",    // market_id=0
+      XAU: "92",   // market_id=92 (Gold, confirmed ~$4,511)
+      WTI: "145",  // market_id=145 (WTI crude, confirmed ~$102)
+    },
+    hasOrderBook: true,
+  },
+  {
+    id: "aster",
+    name: "Aster",
+    type: "dex",
+    color: "#e879f9",
+    takerFeeBps: 3.5, // Standard taker fee
+    symbols: {
+      BTC: "BTCUSDT",
+      ETH: "ETHUSDT",
+      XAU: "XAUUSDT", // Gold, confirmed live
+      WTI: "CLUSDT",  // WTI crude light, confirmed live (~$102)
+    },
+    hasOrderBook: true,
+  },
+  {
     id: "hyperliquid",
     name: "Hyperliquid",
     type: "dex",
@@ -23,39 +51,8 @@ export const EXCHANGES: ExchangeConfig[] = [
     symbols: {
       BTC: "BTC",
       ETH: "ETH",
-      XAU: "@4", // Gold on HL uses index 4 — we'll resolve via meta
-      WTI: "@8", // Oil — resolve via meta
-      XAG: "@5", // Silver — resolve via meta
-    },
-    hasOrderBook: true,
-  },
-  {
-    id: "lighter",
-    name: "Lighter",
-    type: "dex",
-    color: "#facc15",
-    takerFeeBps: 0, // Zero fee for standard accounts
-    symbols: {
-      BTC: "BTCUSDC",
-      ETH: "ETHUSDC",
-      XAU: null, // Need to verify availability
-      WTI: null,
-      XAG: null,
-    },
-    hasOrderBook: true,
-  },
-  {
-    id: "binance",
-    name: "Binance",
-    type: "cex",
-    color: "#f0b90b",
-    takerFeeBps: 4.5,
-    symbols: {
-      BTC: "BTCUSDT",
-      ETH: "ETHUSDT",
-      XAU: null, // Binance doesn't have commodity perps
-      WTI: null,
-      XAG: null,
+      XAU: "GOLD", // Gold on Hyperliquid
+      WTI: "OIL",  // WTI crude on Hyperliquid
     },
     hasOrderBook: true,
   },
@@ -68,35 +65,18 @@ export const EXCHANGES: ExchangeConfig[] = [
     symbols: {
       BTC: "BTC-PERP-INTX",
       ETH: "ETH-PERP-INTX",
-      XAU: null, // Need to verify
-      WTI: null,
-      XAG: null,
+      XAU: null, // Not available on Coinbase perps
+      WTI: null, // Not available on Coinbase perps
     },
     hasOrderBook: true,
-  },
-  {
-    id: "ostium",
-    name: "Ostium",
-    type: "dex",
-    color: "#a78bfa",
-    takerFeeBps: 10, // ~0.10% for crypto
-    symbols: {
-      BTC: "BTC/USD",
-      ETH: "ETH/USD",
-      XAU: "XAU/USD",
-      WTI: "WTI/USD",
-      XAG: "XAG/USD",
-    },
-    hasOrderBook: true, // Oracle-based but we use synthetic depth via price API
   },
 ];
 
 export const ASSETS = [
   { id: "BTC", name: "BTC", displayName: "BTC/USD" },
   { id: "ETH", name: "ETH", displayName: "ETH/USD" },
-  { id: "XAU", name: "GOLD/XAU", displayName: "GOLD/XAU" },
-  { id: "WTI", name: "CL/WTI", displayName: "CL/WTI" },
-  { id: "XAG", name: "SILVER/XAG", displayName: "SILVER/XAG" },
+  { id: "XAU", name: "GOLD", displayName: "GOLD/USD" },
+  { id: "WTI", name: "OIL (WTI)", displayName: "OIL/USD (WTI)" },
 ];
 
 export const NOTIONAL_SIZES = [10_000, 100_000, 1_000_000, 10_000_000];

@@ -16,22 +16,17 @@ interface OrderBookResponse {
 
 // ─── HYPERLIQUID ───────────────────────────────────────────────
 
-async function fetchHyperliquid(asset: string): Promise<OrderBookResponse> {
-  // First get meta to resolve HIP-3 symbols if needed
-  let coin = asset;
-
+async function fetchHyperliquid(asset: string, symbolOverride?: string): Promise<OrderBookResponse> {
   // Map our asset IDs to Hyperliquid coin names
   const hlMap: Record<string, string> = {
     BTC: "BTC",
     ETH: "ETH",
     XAU: "GOLD",
     WTI: "OIL",
-    XAG: "SILVER",
   };
 
-  coin = hlMap[asset] || asset;
+  const coin = symbolOverride || hlMap[asset] || asset;
 
-  // Try fetching with the mapped name, fall back to checking all metas
   try {
     const res = await fetch("https://api.hyperliquid.xyz/info", {
       method: "POST",
@@ -111,74 +106,17 @@ function parseHyperliquidBook(
   };
 }
 
-// ─── BINANCE ───────────────────────────────────────────────────
-
-async function fetchBinance(asset: string): Promise<OrderBookResponse> {
-  const symbolMap: Record<string, string | null> = {
-    BTC: "BTCUSDT",
-    ETH: "ETHUSDT",
-    XAU: null,
-    WTI: null,
-    XAG: null,
-  };
-
-  const symbol = symbolMap[asset];
-  if (!symbol) {
-    return {
-      exchange: "binance",
-      asset,
-      bids: [],
-      asks: [],
-      timestamp: Date.now(),
-      error: "Asset not available on Binance perps",
-    };
-  }
-
-  try {
-    const res = await fetch(
-      `https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=1000`,
-      { headers: { "User-Agent": "Mozilla/5.0" } }
-    );
-    const data = await res.json();
-
-    const bids: OrderBookLevel[] = (data.bids || []).map(
-      (l: [string, string]) => ({
-        price: parseFloat(l[0]),
-        size: parseFloat(l[1]),
-      })
-    );
-    const asks: OrderBookLevel[] = (data.asks || []).map(
-      (l: [string, string]) => ({
-        price: parseFloat(l[0]),
-        size: parseFloat(l[1]),
-      })
-    );
-
-    return { exchange: "binance", asset, bids, asks, timestamp: Date.now() };
-  } catch (e) {
-    return {
-      exchange: "binance",
-      asset,
-      bids: [],
-      asks: [],
-      timestamp: Date.now(),
-      error: String(e),
-    };
-  }
-}
-
 // ─── COINBASE ──────────────────────────────────────────────────
 
-async function fetchCoinbase(asset: string): Promise<OrderBookResponse> {
+async function fetchCoinbase(asset: string, symbolOverride?: string): Promise<OrderBookResponse> {
   const symbolMap: Record<string, string | null> = {
     BTC: "BTC-PERP-INTX",
     ETH: "ETH-PERP-INTX",
-    XAU: null,
-    WTI: null,
-    XAG: null,
+    XAU: null, // Not available on Coinbase perps
+    WTI: null, // Not available on Coinbase perps
   };
 
-  const symbol = symbolMap[asset];
+  const symbol = symbolOverride || symbolMap[asset];
   if (!symbol) {
     return {
       exchange: "coinbase",
@@ -191,7 +129,6 @@ async function fetchCoinbase(asset: string): Promise<OrderBookResponse> {
   }
 
   try {
-    // Coinbase Advanced Trade API - product book
     const res = await fetch(
       `https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=${symbol}&limit=500`
     );
@@ -236,19 +173,24 @@ async function fetchCoinbase(asset: string): Promise<OrderBookResponse> {
 }
 
 // ─── LIGHTER ───────────────────────────────────────────────────
+// Lighter uses integer market IDs. Our exchanges.ts stores them as strings.
+// Known IDs: ETH=0, BTC=1, XAU(Gold)=92, WTI(Oil)=145
 
-async function fetchLighter(asset: string): Promise<OrderBookResponse> {
-  // Lighter market IDs: ETH=0, BTC=1
+async function fetchLighter(asset: string, symbolOverride?: string): Promise<OrderBookResponse> {
+  // Market IDs stored as strings in exchanges.ts symbols map
   const marketIdMap: Record<string, number | null> = {
     BTC: 1,
     ETH: 0,
-    XAU: null,
-    WTI: null,
-    XAG: null,
+    XAU: 92,  // Gold — confirmed ~$4,511
+    WTI: 145, // WTI crude oil — confirmed ~$102
   };
 
-  const marketId = marketIdMap[asset];
-  if (marketId === null || marketId === undefined) {
+  // symbolOverride contains the market_id as a string when used for custom assets
+  const marketId = symbolOverride !== undefined
+    ? parseInt(symbolOverride, 10)
+    : marketIdMap[asset];
+
+  if (marketId === null || marketId === undefined || isNaN(marketId)) {
     return {
       exchange: "lighter",
       asset,
@@ -291,65 +233,65 @@ async function fetchLighter(asset: string): Promise<OrderBookResponse> {
   }
 }
 
-// ─── OSTIUM ────────────────────────────────────────────────────
+// ─── ASTER ─────────────────────────────────────────────────────
+// Aster DEX uses a Binance-compatible REST API at fapi.asterdex.com
+// Symbols: BTCUSDT, ETHUSDT, XAUUSDT (Gold), CLUSDT (WTI crude)
 
-async function fetchOstium(asset: string): Promise<OrderBookResponse> {
-  // Ostium is oracle-based — slippage = oracle bid/ask spread (not size-dependent).
-  // We build a synthetic order book with a single massive level at the oracle bid/ask
-  // so the slippage calculator reflects the true execution cost.
-  const assetMap: Record<string, string> = {
-    BTC: "BTCUSD",
-    ETH: "ETHUSD",
-    XAU: "XAUUSD",
-    WTI: "CLUSD", // Ostium uses CL (crude light) for WTI
-    XAG: "XAGUSD",
+async function fetchAster(asset: string, symbolOverride?: string): Promise<OrderBookResponse> {
+  const symbolMap: Record<string, string | null> = {
+    BTC: "BTCUSDT",
+    ETH: "ETHUSDT",
+    XAU: "XAUUSDT", // Gold — confirmed live
+    WTI: "CLUSDT",  // WTI crude light — confirmed live (~$102)
   };
 
-  const ostiumAsset = assetMap[asset];
-  if (!ostiumAsset) {
+  const symbol = symbolOverride || symbolMap[asset];
+  if (!symbol) {
     return {
-      exchange: "ostium",
+      exchange: "aster",
       asset,
       bids: [],
       asks: [],
       timestamp: Date.now(),
-      error: "Asset not available on Ostium",
+      error: "Asset not available on Aster",
     };
   }
 
   try {
     const res = await fetch(
-      `https://metadata-backend.ostium.io/PricePublish/latest-price?asset=${ostiumAsset}`
+      `https://fapi.asterdex.com/fapi/v1/depth?symbol=${symbol}&limit=1000`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
     );
     const data = await res.json();
 
-    if (!data.bid || !data.ask) {
+    if (data.code && data.msg) {
       return {
-        exchange: "ostium",
+        exchange: "aster",
         asset,
         bids: [],
         asks: [],
         timestamp: Date.now(),
-        error: "No price data from Ostium oracle",
+        error: `Aster API error: ${data.msg}`,
       };
     }
 
-    const bid = parseFloat(data.bid);
-    const ask = parseFloat(data.ask);
+    const bids: OrderBookLevel[] = (data.bids || []).map(
+      (l: [string, string]) => ({
+        price: parseFloat(l[0]),
+        size: parseFloat(l[1]),
+      })
+    );
+    const asks: OrderBookLevel[] = (data.asks || []).map(
+      (l: [string, string]) => ({
+        price: parseFloat(l[0]),
+        size: parseFloat(l[1]),
+      })
+    );
 
-    // Synthetic depth: $1B notional at oracle prices — slippage is spread-only, not size-dependent
-    const largeSize = 1_000_000_000 / ask;
-
-    return {
-      exchange: "ostium",
-      asset,
-      bids: [{ price: bid, size: largeSize }],
-      asks: [{ price: ask, size: largeSize }],
-      timestamp: Date.now(),
-    };
+    return { exchange: "aster", asset, bids, asks, timestamp: Date.now() };
   } catch (e) {
     return {
-      exchange: "ostium",
+      exchange: "aster",
       asset,
       bids: [],
       asks: [],
@@ -365,6 +307,8 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const exchange = searchParams.get("exchange");
   const asset = searchParams.get("asset");
+  // Optional symbol override for custom assets
+  const symbolOverride = searchParams.get("symbol") ?? undefined;
 
   if (!exchange || !asset) {
     return NextResponse.json(
@@ -377,19 +321,16 @@ export async function GET(request: NextRequest) {
 
   switch (exchange) {
     case "hyperliquid":
-      result = await fetchHyperliquid(asset);
-      break;
-    case "binance":
-      result = await fetchBinance(asset);
+      result = await fetchHyperliquid(asset, symbolOverride);
       break;
     case "coinbase":
-      result = await fetchCoinbase(asset);
+      result = await fetchCoinbase(asset, symbolOverride);
       break;
     case "lighter":
-      result = await fetchLighter(asset);
+      result = await fetchLighter(asset, symbolOverride);
       break;
-    case "ostium":
-      result = await fetchOstium(asset);
+    case "aster":
+      result = await fetchAster(asset, symbolOverride);
       break;
     default:
       return NextResponse.json(
@@ -418,10 +359,9 @@ export async function POST(request: NextRequest) {
 
   const fetchers: Record<string, (a: string) => Promise<OrderBookResponse>> = {
     hyperliquid: fetchHyperliquid,
-    binance: fetchBinance,
     coinbase: fetchCoinbase,
     lighter: fetchLighter,
-    ostium: fetchOstium,
+    aster: fetchAster,
   };
 
   const results = await Promise.all(
