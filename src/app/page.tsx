@@ -193,31 +193,68 @@ export default function Dashboard() {
 
         if (!symbol) continue; // Not available on this exchange
 
-        // Build URL with optional symbol override (for custom assets)
-        const isCustom = asset.isCustom;
-        const url = isCustom
-          ? `/api/orderbook?exchange=${exchange.id}&asset=${asset.id}&symbol=${encodeURIComponent(symbol)}`
-          : `/api/orderbook?exchange=${exchange.id}&asset=${asset.id}`;
+        // Binance is fetched directly from the browser to bypass Vercel IP blocks
+        // (Binance blocks AWS/Vercel server IPs but supports CORS for browser requests)
+        const isBinanceDirect = exchange.id === "binance";
 
-        const p = fetch(url)
-          .then((res) => res.json())
-          .then((data) => {
-            if (data.error && (!data.bids || data.bids.length === 0)) {
-              newErrors[`${exchange.id}-${asset.id}`] = data.error;
-              return;
-            }
-            if (!newBooks[exchange.id]) newBooks[exchange.id] = {};
-            newBooks[exchange.id][asset.id] = {
-              bids: data.bids || [],
-              asks: data.asks || [],
-              timestamp: data.timestamp,
-              exchange: exchange.id,
-              asset: asset.id,
-            };
-          })
-          .catch((err) => {
-            newErrors[`${exchange.id}-${asset.id}`] = String(err);
-          });
+        let p: Promise<void>;
+
+        if (isBinanceDirect) {
+          const binanceSymbol = symbol;
+          p = fetch(
+            `https://fapi.binance.com/fapi/v1/depth?symbol=${binanceSymbol}&limit=1000`
+          )
+            .then((res) => res.json())
+            .then((data) => {
+              if (data.code && data.msg) {
+                newErrors[`${exchange.id}-${asset.id}`] = `Binance: ${data.msg}`;
+                return;
+              }
+              if (!newBooks[exchange.id]) newBooks[exchange.id] = {};
+              newBooks[exchange.id][asset.id] = {
+                bids: (data.bids || []).map(([p, s]: [string, string]) => ({
+                  price: parseFloat(p),
+                  size: parseFloat(s),
+                })),
+                asks: (data.asks || []).map(([p, s]: [string, string]) => ({
+                  price: parseFloat(p),
+                  size: parseFloat(s),
+                })),
+                timestamp: Date.now(),
+                exchange: exchange.id,
+                asset: asset.id,
+              };
+            })
+            .catch((err) => {
+              newErrors[`${exchange.id}-${asset.id}`] = String(err);
+            });
+        } else {
+          // All other exchanges go through the Next.js API route (server-side)
+          const isCustom = asset.isCustom;
+          const url = isCustom
+            ? `/api/orderbook?exchange=${exchange.id}&asset=${asset.id}&symbol=${encodeURIComponent(symbol)}`
+            : `/api/orderbook?exchange=${exchange.id}&asset=${asset.id}`;
+
+          p = fetch(url)
+            .then((res) => res.json())
+            .then((data) => {
+              if (data.error && (!data.bids || data.bids.length === 0)) {
+                newErrors[`${exchange.id}-${asset.id}`] = data.error;
+                return;
+              }
+              if (!newBooks[exchange.id]) newBooks[exchange.id] = {};
+              newBooks[exchange.id][asset.id] = {
+                bids: data.bids || [],
+                asks: data.asks || [],
+                timestamp: data.timestamp,
+                exchange: exchange.id,
+                asset: asset.id,
+              };
+            })
+            .catch((err) => {
+              newErrors[`${exchange.id}-${asset.id}`] = String(err);
+            });
+        }
 
         fetchPromises.push(p);
       }
