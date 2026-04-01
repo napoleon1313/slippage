@@ -922,7 +922,7 @@ export default function Dashboard() {
           let cumValue = 0;
           const done = new Set<number>();
 
-          for (let i = 0; i < Math.min(levels.length, 300); i++) {
+          for (let i = 0; i < levels.length; i++) {
             const lv = levels[i];
             const lvNotional = lv.price * lv.size;
             const prevCum = cumNotional;
@@ -968,7 +968,7 @@ export default function Dashboard() {
           const sideLabel = side === "ask" ? "Asks — Buy side" : "Bids — Sell side";
           const bpsLabel = side === "ask" ? "Bps ↑ Mid" : "Bps ↓ Mid";
           return (
-            <div className="overflow-auto" style={{ maxHeight: 420 }}>
+            <div className="overflow-auto" style={{ maxHeight: 600 }}>
               <table className="w-full text-xs border-collapse">
                 <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
                   <tr style={{ background: "var(--bg-secondary)", borderBottom: "1px solid var(--border)" }}>
