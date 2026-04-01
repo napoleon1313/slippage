@@ -99,6 +99,7 @@ export default function Dashboard() {
   >({}); // exchange -> asset -> notional -> side -> result
   const [lastFetchTime, setLastFetchTime] = useState<Date | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [probeKey, setProbeKey] = useState<string | null>(null); // "exchangeId::assetId"
   const [enabledExchanges, setEnabledExchanges] = useState<string[]>(
     EXCHANGES.map((e) => e.id)
   );
@@ -695,9 +696,14 @@ export default function Dashboard() {
                                       background: isBest ? ex.color + "18" : "transparent",
                                     }}
                                   >
-                                    <span className="font-medium text-xs" style={{ color: ex.color }}>
+                                    <button
+                                      className="font-medium text-xs text-left"
+                                      style={{ color: ex.color, background: "transparent", border: "none", padding: 0, cursor: "pointer", textDecoration: probeKey === `${ex.id}::${asset.id}` ? "underline" : "none" }}
+                                      onClick={() => setProbeKey(probeKey === `${ex.id}::${asset.id}` ? null : `${ex.id}::${asset.id}`)}
+                                      title="View raw order book proof"
+                                    >
                                       {ex.name}{isBest && " 🏆"}
-                                    </span>
+                                    </button>
                                     <span
                                       className="font-mono"
                                       style={{
@@ -737,9 +743,14 @@ export default function Dashboard() {
                                       background: isBest ? ex.color + "18" : "transparent",
                                     }}
                                   >
-                                    <span className="font-medium text-xs" style={{ color: ex.color }}>
+                                    <button
+                                      className="font-medium text-xs text-left"
+                                      style={{ color: ex.color, background: "transparent", border: "none", padding: 0, cursor: "pointer", textDecoration: probeKey === `${ex.id}::${asset.id}` ? "underline" : "none" }}
+                                      onClick={() => setProbeKey(probeKey === `${ex.id}::${asset.id}` ? null : `${ex.id}::${asset.id}`)}
+                                      title="View raw order book proof"
+                                    >
                                       {ex.name}{isBest && " 🏆"}
-                                    </span>
+                                    </button>
                                     <span
                                       className="font-mono"
                                       style={{
@@ -888,6 +899,166 @@ export default function Dashboard() {
           </table>
         </div>
       )}
+
+      {/* ── Order Book Proof Panel ──────────────────────────────── */}
+      {probeKey && (() => {
+        const [probeExId, probeAssetId] = probeKey.split("::");
+        const book = currentData[probeExId]?.[probeAssetId];
+        const probeExchange = EXCHANGES.find((e) => e.id === probeExId);
+        const probeAsset = allAssets.find((a) => a.id === probeAssetId);
+        if (!book || !probeExchange || !probeAsset) return null;
+
+        const midPrice = (book.asks[0]?.price + book.bids[0]?.price) / 2;
+        const ts = new Date(book.timestamp);
+
+        type DepthRow =
+          | { type: "level"; idx: number; price: number; size: number; notional: number; cumNotional: number; bpsFromMid: number }
+          | { type: "marker"; threshold: number; vwapBps: number; key: string };
+
+        const buildRows = (levels: { price: number; size: number }[], side: "ask" | "bid"): DepthRow[] => {
+          const rows: DepthRow[] = [];
+          let cumNotional = 0;
+          let cumSize = 0;
+          let cumValue = 0;
+          const done = new Set<number>();
+
+          for (let i = 0; i < Math.min(levels.length, 300); i++) {
+            const lv = levels[i];
+            const lvNotional = lv.price * lv.size;
+            const prevCum = cumNotional;
+            cumNotional += lvNotional;
+            const bpsFromMid = side === "ask"
+              ? ((lv.price - midPrice) / midPrice) * 10000
+              : ((midPrice - lv.price) / midPrice) * 10000;
+
+            // Emit fill markers for thresholds crossed at this level
+            for (const threshold of NOTIONAL_SIZES) {
+              if (done.has(threshold)) continue;
+              if (prevCum < threshold && cumNotional >= threshold) {
+                const neededNotional = threshold - prevCum;
+                const neededSize = neededNotional / lv.price;
+                const vwap = (cumValue + lv.price * neededSize) / (cumSize + neededSize);
+                const vwapBps = side === "ask"
+                  ? ((vwap - midPrice) / midPrice) * 10000
+                  : ((midPrice - vwap) / midPrice) * 10000;
+                rows.push({ type: "marker", threshold, vwapBps, key: `${side}-marker-${threshold}` });
+                done.add(threshold);
+              }
+            }
+
+            cumSize += lv.size;
+            cumValue += lv.price * lv.size;
+            rows.push({ type: "level", idx: i + 1, price: lv.price, size: lv.size, notional: lvNotional, cumNotional, bpsFromMid });
+
+            if (done.size === NOTIONAL_SIZES.length) break;
+          }
+          return rows;
+        };
+
+        const fmtUsd = (n: number) =>
+          n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1000 ? `$${(n / 1000).toFixed(1)}K` : `$${n.toFixed(0)}`;
+
+        const askRows = buildRows(book.asks, "ask");
+        const bidRows = buildRows(book.bids, "bid");
+
+        const colHead = "py-1 px-2 text-right font-medium text-[10px] uppercase tracking-wider";
+
+        const renderTable = (rows: DepthRow[], side: "ask" | "bid") => {
+          const sideColor = side === "ask" ? "#f87171" : "#4ade80";
+          const sideLabel = side === "ask" ? "Asks — Buy side" : "Bids — Sell side";
+          const bpsLabel = side === "ask" ? "Bps ↑ Mid" : "Bps ↓ Mid";
+          return (
+            <div className="overflow-auto" style={{ maxHeight: 420 }}>
+              <table className="w-full text-xs border-collapse">
+                <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
+                  <tr style={{ background: "var(--bg-secondary)", borderBottom: "1px solid var(--border)" }}>
+                    <th colSpan={5} className="py-1.5 px-2 text-left font-semibold text-xs" style={{ color: sideColor }}>
+                      {sideLabel}
+                    </th>
+                  </tr>
+                  <tr style={{ background: "var(--bg-secondary)", borderBottom: "1px solid var(--border)" }}>
+                    <th className={colHead} style={{ color: "var(--text-secondary)" }}>Price</th>
+                    <th className={colHead} style={{ color: "var(--text-secondary)" }}>Size</th>
+                    <th className={colHead} style={{ color: "var(--text-secondary)" }}>Notional</th>
+                    <th className={colHead} style={{ color: "var(--text-secondary)" }}>Cumulative</th>
+                    <th className={colHead} style={{ color: "var(--text-secondary)" }}>{bpsLabel}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, i) => {
+                    if (row.type === "marker") {
+                      return (
+                        <tr key={row.key} style={{ background: sideColor + "22", borderBottom: `1px solid ${sideColor}44` }}>
+                          <td colSpan={5} className="py-0.5 px-3 font-semibold" style={{ color: sideColor }}>
+                            🏁 {fmtUsd(row.threshold)} fill completes — avg {row.vwapBps.toFixed(3)} bps from mid (VWAP)
+                          </td>
+                        </tr>
+                      );
+                    }
+                    return (
+                      <tr key={`${side}-${i}`} style={{ borderBottom: "1px solid var(--border)", background: "transparent" }}>
+                        <td className="py-0.5 px-2 text-right font-mono" style={{ color: "var(--text-primary)" }}>
+                          {row.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                        </td>
+                        <td className="py-0.5 px-2 text-right font-mono" style={{ color: "var(--text-secondary)" }}>
+                          {row.size < 0.001 ? row.size.toFixed(6) : row.size < 1 ? row.size.toFixed(4) : row.size.toFixed(3)}
+                        </td>
+                        <td className="py-0.5 px-2 text-right font-mono" style={{ color: "var(--text-secondary)" }}>
+                          {fmtUsd(row.notional)}
+                        </td>
+                        <td className="py-0.5 px-2 text-right font-mono" style={{ color: "var(--text-primary)" }}>
+                          {fmtUsd(row.cumNotional)}
+                        </td>
+                        <td className="py-0.5 px-2 text-right font-mono" style={{ color: sideColor }}>
+                          {row.bpsFromMid.toFixed(3)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
+        };
+
+        return (
+          <div className="rounded-lg mb-8 overflow-hidden" style={{ border: `1px solid ${probeExchange.color}55` }}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 flex-wrap gap-2" style={{ background: probeExchange.color + "18", borderBottom: `1px solid ${probeExchange.color}33` }}>
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="font-bold text-sm" style={{ color: probeExchange.color }}>{probeExchange.name}</span>
+                <span className="font-medium text-sm" style={{ color: "var(--text-primary)" }}>{probeAsset.displayName}</span>
+                <span className="text-xs px-2 py-0.5 rounded font-mono" style={{ background: "var(--bg-secondary)", color: "var(--text-primary)", border: "1px solid var(--border)" }}>
+                  Mid ${midPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                </span>
+                <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                  Snapshot at {ts.toLocaleTimeString()} · {book.bids.length} bids · {book.asks.length} asks
+                </span>
+              </div>
+              <button
+                onClick={() => setProbeKey(null)}
+                className="text-xs px-2 py-1 rounded"
+                style={{ color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-secondary)" }}
+              >
+                ✕ Close
+              </button>
+            </div>
+            {/* Split order book */}
+            <div className="grid grid-cols-2">
+              <div style={{ borderRight: "1px solid var(--border)" }}>
+                {renderTable(askRows, "ask")}
+              </div>
+              <div>
+                {renderTable(bidRows, "bid")}
+              </div>
+            </div>
+            {/* Footer note */}
+            <div className="px-4 py-2 text-xs" style={{ background: "var(--bg-secondary)", borderTop: "1px solid var(--border)", color: "var(--text-secondary)" }}>
+              🏁 markers show exact VWAP slippage at each fill threshold — consistent with the slippage values shown in the table above.
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Audit Trail / Snapshots */}
       {snapshots.length > 0 && (
