@@ -372,6 +372,16 @@ export default function Dashboard() {
     [results, side, method]
   );
 
+  // Returns false when the order book ran out before filling the full notional
+  const getCellFilled = useCallback(
+    (exchangeId: string, assetId: string, notional: number): boolean => {
+      const r = results[exchangeId]?.[assetId]?.[notional]?.[side];
+      if (!r) return true; // no data = no warning needed
+      return r.fullyFilled ?? true;
+    },
+    [results, side]
+  );
+
   // Find best (lowest) value for highlighting
   const getBestExchange = useCallback(
     (assetId: string, notional: number): string | null => {
@@ -688,6 +698,7 @@ export default function Dashboard() {
                                 const val = getCellValue(ex.id, asset.id, notional);
                                 const isBest = ex.id === bestEx && val !== "--";
                                 const hasError = errors[`${ex.id}-${asset.id}`];
+                                const fullyFilled = getCellFilled(ex.id, asset.id, notional);
                                 return (
                                   <div
                                     key={ex.id}
@@ -707,11 +718,11 @@ export default function Dashboard() {
                                     <span
                                       className="font-mono"
                                       style={{
-                                        color: val === "--" ? "var(--text-secondary)" : "var(--text-primary)",
+                                        color: val === "--" ? "var(--text-secondary)" : fullyFilled ? "var(--text-primary)" : "#f59e0b",
                                       }}
-                                      title={hasError || undefined}
+                                      title={hasError || (!fullyFilled ? "⚠ Insufficient order book depth — partial fill only. Slippage is understated." : undefined)}
                                     >
-                                      {val === "--" ? "--" : `${val} bps`}
+                                      {val === "--" ? "--" : `${fullyFilled ? "" : "~"}${val} bps${fullyFilled ? "" : " ⚠"}`}
                                     </span>
                                   </div>
                                 );
@@ -735,6 +746,7 @@ export default function Dashboard() {
                                 const val = getCellValue(ex.id, asset.id, notional);
                                 const isBest = ex.id === bestEx && val !== "--";
                                 const hasError = errors[`${ex.id}-${asset.id}`];
+                                const fullyFilled = getCellFilled(ex.id, asset.id, notional);
                                 return (
                                   <div
                                     key={ex.id}
@@ -754,11 +766,11 @@ export default function Dashboard() {
                                     <span
                                       className="font-mono"
                                       style={{
-                                        color: val === "--" ? "var(--text-secondary)" : "var(--text-primary)",
+                                        color: val === "--" ? "var(--text-secondary)" : fullyFilled ? "var(--text-primary)" : "#f59e0b",
                                       }}
-                                      title={hasError || undefined}
+                                      title={hasError || (!fullyFilled ? "⚠ Insufficient order book depth — partial fill only. Slippage is understated." : undefined)}
                                     >
-                                      {val === "--" ? "--" : `${val} bps`}
+                                      {val === "--" ? "--" : `${fullyFilled ? "" : "~"}${val} bps${fullyFilled ? "" : " ⚠"}`}
                                     </span>
                                   </div>
                                 );
