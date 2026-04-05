@@ -391,10 +391,16 @@ async function fetchEdgex(asset: string, symbolOverride?: string): Promise<Order
     );
     const data = await res.json();
 
-    const bids: OrderBookLevel[] = (data.bids || []).map(
+    // Response: { code: "SUCCESS", data: [{ bids: [...], asks: [...] }] }
+    const book = data?.data?.[0];
+    if (!book) {
+      return { exchange: "edgex", asset, bids: [], asks: [], timestamp: Date.now(), error: `No book data: ${data?.code}` };
+    }
+
+    const bids: OrderBookLevel[] = (book.bids || []).map(
       (l: { price: string; size: string }) => ({ price: parseFloat(l.price), size: parseFloat(l.size) })
     );
-    const asks: OrderBookLevel[] = (data.asks || []).map(
+    const asks: OrderBookLevel[] = (book.asks || []).map(
       (l: { price: string; size: string }) => ({ price: parseFloat(l.price), size: parseFloat(l.size) })
     );
 
