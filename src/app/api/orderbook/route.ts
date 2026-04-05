@@ -131,7 +131,7 @@ async function fetchCoinbase(asset: string, symbolOverride?: string): Promise<Or
 
   try {
     const res = await fetch(
-      `https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=${symbol}&limit=500`
+      `https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=${symbol}&limit=1000`
     );
     const data = await res.json();
 
