@@ -25,7 +25,7 @@ export const EXCHANGES: ExchangeConfig[] = [
       ETH: "0",    // market_id=0
       XAU: "92",   // market_id=92 (Gold, confirmed ~$4,511)
       WTI: "145",  // market_id=145 (WTI crude, confirmed ~$102)
-      XAG: null,   // Not available on Lighter
+      XAG: "93",   // market_id=93 (Silver, confirmed ~$72)
     },
     hasOrderBook: true,
   },
@@ -53,9 +53,9 @@ export const EXCHANGES: ExchangeConfig[] = [
     symbols: {
       BTC: "BTC",
       ETH: "ETH",
-      XAU: "xyz:GOLD", // Gold — RWA market, xyz: prefix required
-      WTI: "xyz:CL",   // WTI crude light — RWA market, xyz: prefix required
-      XAG: null,       // Not available on Hyperliquid
+      XAU: "xyz:GOLD",   // Gold — RWA market, xyz: prefix required
+      WTI: "xyz:CL",    // WTI crude light — RWA market, xyz: prefix required
+      XAG: "xyz:SILVER", // Silver — RWA market, xyz: prefix required
     },
     hasOrderBook: true,
   },

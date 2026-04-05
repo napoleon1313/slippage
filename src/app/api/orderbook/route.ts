@@ -21,8 +21,9 @@ async function fetchHyperliquid(asset: string, symbolOverride?: string): Promise
   const hlMap: Record<string, string> = {
     BTC: "BTC",
     ETH: "ETH",
-    XAU: "xyz:GOLD", // RWA market prefix required
-    WTI: "xyz:CL",  // WTI crude light, RWA market prefix required
+    XAU: "xyz:GOLD",   // RWA market prefix required
+    WTI: "xyz:CL",     // WTI crude light, RWA market prefix required
+    XAG: "xyz:SILVER", // Silver, RWA market prefix required
   };
 
   const coin = symbolOverride || hlMap[asset] || asset;
@@ -183,6 +184,7 @@ async function fetchLighter(asset: string, symbolOverride?: string): Promise<Ord
     ETH: 0,
     XAU: 92,  // Gold — confirmed ~$4,511
     WTI: 145, // WTI crude oil — confirmed ~$102
+    XAG: 93,  // Silver — confirmed ~$72
   };
 
   // symbolOverride contains the market_id as a string when used for custom assets
