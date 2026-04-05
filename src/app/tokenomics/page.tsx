@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useMemo } from "react";
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  ReferenceLine, Cell, Legend,
+  ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, ReferenceLine, Cell, Legend,
 } from "recharts";
 import {
   TOKEN_CONFIGS, FEE_BREAKDOWNS, BUYBACK_EVENTS, BUYBACK_TOTALS, TRADFI_COMPS,
@@ -45,13 +45,15 @@ function Skeleton({ w = "80px" }: { w?: string }) {
 
 const TOOLTIP_STYLE = {
   contentStyle: {
-    background: "var(--bg-card)",
-    border: "1px solid var(--border)",
-    color: "var(--text-primary)",
+    background: "#111827",
+    border: "1px solid rgba(255,255,255,0.12)",
     borderRadius: "6px",
     fontSize: "12px",
+    color: "#fff",
   },
-  labelStyle: { color: "var(--text-secondary)" },
+  labelStyle: { color: "#e5e7eb", fontWeight: 600, marginBottom: "4px" },
+  itemStyle: { color: "#fff" },
+  cursor: { fill: "rgba(255,255,255,0.04)" },
 };
 
 const CHART_AXIS = { fill: "var(--text-secondary)", fontSize: 11 };
@@ -114,9 +116,10 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }
 export default function TokenomicsPage() {
   const [liveData, setLiveData] = useState<LiveTokenData[] | null>(null);
   const [loading, setLoading] = useState(true);
-  const [buybackMetric, setBuybackMetric] = useState<"usd" | "tokens">("usd");
+  const [buybackMetric, setBuybackMetric] = useState<"usd" | "tokens" | "pct_circ" | "pct_fdv">("usd");
   const [buybackGranularity, setBuybackGranularity] = useState<TimeGranularity>("monthly");
   const [supplyBasis, setSupplyBasis] = useState<"circ" | "fdv">("circ");
+  const [showCumulative, setShowCumulative] = useState(false);
 
   useEffect(() => {
     fetch("/api/tokenomics")
@@ -186,18 +189,39 @@ export default function TokenomicsPage() {
       agg.forEach((a) => allPeriods.add(a.period));
     }
 
+    const cumUsd: Record<string, number> = {};
+
     return Array.from(allPeriods)
       .sort()
       .map((period) => {
         const row: Record<string, number | string | boolean> = { period };
         for (const cfg of TOKEN_CONFIGS) {
           const entry = byToken[cfg.id]?.get(period);
-          row[cfg.id] = buybackMetric === "usd" ? (entry?.usd ?? 0) : (entry?.tokens ?? 0);
+          const tokens = entry?.tokens ?? 0;
+          const usd = entry?.usd ?? 0;
+          const circ = getCirc(cfg.id);
+          const fdvTokens = getFDV(cfg.id)
+            ? getFDV(cfg.id)! / (getPrice(cfg.id) ?? 1)
+            : cfg.totalSupply;
+
+          if (buybackMetric === "usd") {
+            row[cfg.id] = usd;
+          } else if (buybackMetric === "tokens") {
+            row[cfg.id] = tokens;
+          } else if (buybackMetric === "pct_circ") {
+            row[cfg.id] = circ > 0 ? parseFloat(((tokens / circ) * 100).toFixed(6)) : 0;
+          } else {
+            row[cfg.id] = fdvTokens > 0 ? parseFloat(((tokens / fdvTokens) * 100).toFixed(6)) : 0;
+          }
+
           row[`${cfg.id}_est`] = entry?.isEstimated ?? false;
+          cumUsd[cfg.id] = (cumUsd[cfg.id] ?? 0) + usd;
+          row[`${cfg.id}_cum`] = cumUsd[cfg.id];
         }
         return row;
       });
-  }, [buybackGranularity, buybackMetric]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buybackGranularity, buybackMetric, records]);
 
   // % of supply bought back
   const supplyPctData = useMemo(() =>
@@ -497,44 +521,112 @@ export default function TokenomicsPage() {
           <SectionHeader title="Buyback History" subtitle="Seeded from public on-chain data. Estimated values shown at 50% opacity." />
           <div style={{ display: "flex", flexDirection: "column", gap: "8px", alignItems: "flex-end" }}>
             <PillGroup
-              options={[{ label: "USD Value", value: "usd" }, { label: "Token Count", value: "tokens" }]}
+              options={[
+                { label: "USD Value", value: "usd" },
+                { label: "Token Count", value: "tokens" },
+                { label: "% Circ Supply", value: "pct_circ" },
+                { label: "% FDV Supply", value: "pct_fdv" },
+              ]}
               value={buybackMetric}
               onChange={setBuybackMetric}
             />
-            <PillGroup
-              options={[
-                { label: "Daily", value: "daily" },
-                { label: "Weekly", value: "weekly" },
-                { label: "Monthly", value: "monthly" },
-                { label: "3-Month", value: "3month" },
-                { label: "Yearly", value: "yearly" },
-              ]}
-              value={buybackGranularity}
-              onChange={setBuybackGranularity}
-            />
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <PillGroup
+                options={[
+                  { label: "Daily", value: "daily" },
+                  { label: "Weekly", value: "weekly" },
+                  { label: "Monthly", value: "monthly" },
+                  { label: "3-Month", value: "3month" },
+                  { label: "Yearly", value: "yearly" },
+                ]}
+                value={buybackGranularity}
+                onChange={setBuybackGranularity}
+              />
+              <button
+                onClick={() => setShowCumulative((v) => !v)}
+                style={{
+                  padding: "3px 10px",
+                  borderRadius: "999px",
+                  fontSize: "12px",
+                  fontWeight: showCumulative ? 600 : 400,
+                  background: showCumulative ? "#7c3aed" : "var(--bg-secondary)",
+                  color: showCumulative ? "#fff" : "var(--text-secondary)",
+                  border: `1px solid ${showCumulative ? "#7c3aed" : "var(--border)"}`,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap" as const,
+                }}
+              >
+                + Cumulative
+              </button>
+            </div>
           </div>
         </div>
 
-        <ResponsiveContainer width="100%" height={320}>
-          <BarChart data={buybackChartData} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
+        <ResponsiveContainer width="100%" height={340}>
+          <ComposedChart data={buybackChartData} margin={{ top: 10, right: showCumulative ? 60 : 20, left: 10, bottom: 5 }}>
             <CartesianGrid {...CHART_GRID} />
             <XAxis dataKey="period" tick={CHART_AXIS} angle={-20} textAnchor="end" height={40} />
-            <YAxis tick={CHART_AXIS} tickFormatter={buybackMetric === "usd" ? fmtCompact : (v) => fmtTokens(v as number)} />
+            <YAxis
+              yAxisId="left"
+              tick={CHART_AXIS}
+              tickFormatter={
+                buybackMetric === "usd" ? fmtCompact
+                : buybackMetric === "tokens" ? (v) => fmtTokens(v as number)
+                : (v) => `${v}%`
+              }
+            />
+            {showCumulative && (
+              <YAxis
+                yAxisId="right"
+                orientation="right"
+                tick={CHART_AXIS}
+                tickFormatter={fmtCompact}
+                label={{ value: "Cumulative USD", angle: 90, position: "insideRight", fill: "#9ca3af", fontSize: 10, dx: 14 }}
+              />
+            )}
             <Tooltip
               {...TOOLTIP_STYLE}
-              formatter={(value, name) => [
-                buybackMetric === "usd" ? fmtCompact(value as number) : fmtTokens(value as number),
-                TOKEN_CONFIGS.find((c) => c.id === (name as string))?.ticker ?? name,
-              ]}
+              formatter={(value, name) => {
+                const nameStr = name as string;
+                if (nameStr.endsWith("_cum")) {
+                  const id = nameStr.replace("_cum", "");
+                  const ticker = TOKEN_CONFIGS.find((c) => c.id === id)?.ticker ?? id;
+                  return [fmtCompact(value as number), `${ticker} Cumulative`];
+                }
+                const ticker = TOKEN_CONFIGS.find((c) => c.id === nameStr)?.ticker ?? nameStr;
+                if (buybackMetric === "usd") return [fmtCompact(value as number), ticker];
+                if (buybackMetric === "tokens") return [fmtTokens(value as number), ticker];
+                return [`${(value as number).toFixed(4)}%`, ticker];
+              }}
             />
             <Legend
-              formatter={(value) => TOKEN_CONFIGS.find((c) => c.id === value)?.ticker ?? value}
+              formatter={(value) => {
+                const v = value as string;
+                if (v.endsWith("_cum")) {
+                  const id = v.replace("_cum", "");
+                  return `${TOKEN_CONFIGS.find((c) => c.id === id)?.ticker ?? id} (cum.)`;
+                }
+                return TOKEN_CONFIGS.find((c) => c.id === v)?.ticker ?? v;
+              }}
               wrapperStyle={{ fontSize: "12px" }}
             />
             {TOKEN_CONFIGS.map((cfg) => (
-              <Bar key={cfg.id} dataKey={cfg.id} name={cfg.id} fill={cfg.color} radius={[3, 3, 0, 0]} fillOpacity={0.85} />
+              <Bar yAxisId="left" key={cfg.id} dataKey={cfg.id} name={cfg.id} fill={cfg.color} radius={[3, 3, 0, 0]} fillOpacity={0.85} />
             ))}
-          </BarChart>
+            {showCumulative && TOKEN_CONFIGS.map((cfg) => (
+              <Line
+                yAxisId="right"
+                key={`${cfg.id}_cum`}
+                dataKey={`${cfg.id}_cum`}
+                name={`${cfg.id}_cum`}
+                stroke={cfg.color}
+                strokeWidth={2}
+                dot={false}
+                strokeDasharray="4 2"
+                strokeOpacity={0.9}
+              />
+            ))}
+          </ComposedChart>
         </ResponsiveContainer>
 
         {/* Source legend */}
