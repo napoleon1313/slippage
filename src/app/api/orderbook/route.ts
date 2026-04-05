@@ -239,8 +239,9 @@ async function fetchBinance(asset: string, symbolOverride?: string): Promise<Ord
   const symbolMap: Record<string, string | null> = {
     BTC: "BTCUSDT",
     ETH: "ETHUSDT",
-    XAU: "XAUUSDT", // Gold confirmed live on Binance futures (~$4,487)
+    XAU: "XAUUSDT", // Gold confirmed live on Binance futures
     WTI: null,       // Not available on Binance futures
+    XAG: "XAGUSDT", // Silver confirmed live on Binance futures
   };
 
   const symbol = symbolOverride || symbolMap[asset];
@@ -309,6 +310,7 @@ async function fetchAster(asset: string, symbolOverride?: string): Promise<Order
     ETH: "ETHUSDT",
     XAU: "XAUUSDT", // Gold — confirmed live
     WTI: "CLUSDT",  // WTI crude light — confirmed live (~$102)
+    XAG: "XAGUSDT", // Silver — confirmed live
   };
 
   const symbol = symbolOverride || symbolMap[asset];

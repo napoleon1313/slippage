@@ -40,7 +40,7 @@ export const EXCHANGES: ExchangeConfig[] = [
       ETH: "ETHUSDT",
       XAU: "XAUUSDT", // Gold, confirmed live
       WTI: "CLUSDT",  // WTI crude light, confirmed live (~$102)
-      XAG: null,      // Not available on Aster
+      XAG: "XAGUSDT", // Silver, confirmed live
     },
     hasOrderBook: true,
   },
@@ -85,7 +85,7 @@ export const EXCHANGES: ExchangeConfig[] = [
       ETH: "ETHUSDT",
       XAU: "XAUUSDT", // Gold confirmed live on Binance futures
       WTI: null,       // Not available on Binance futures
-      XAG: null,       // Not available on Binance futures
+      XAG: "XAGUSDT", // Silver confirmed live on Binance futures
     },
     hasOrderBook: true,
   },
