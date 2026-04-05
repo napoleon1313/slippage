@@ -367,6 +367,43 @@ async function fetchAster(asset: string, symbolOverride?: string): Promise<Order
   }
 }
 
+// ─── EDGEX ─────────────────────────────────────────────────────
+// EdgeX uses numeric contractIds. Known: BTC=10000001, ETH=10000002,
+// XAU(Gold)=10000234, WTI(CL)=10000283, XAG(Silver)=10000278
+
+async function fetchEdgex(asset: string, symbolOverride?: string): Promise<OrderBookResponse> {
+  const contractIdMap: Record<string, string | null> = {
+    BTC: "10000001",
+    ETH: "10000002",
+    XAU: "10000234", // XAUTUSD (Gold)
+    WTI: "10000283", // CLUSD (Crude Oil)
+    XAG: "10000278", // SILVERUSD
+  };
+
+  const contractId = symbolOverride || contractIdMap[asset];
+  if (!contractId) {
+    return { exchange: "edgex", asset, bids: [], asks: [], timestamp: Date.now(), error: "Asset not available on EdgeX" };
+  }
+
+  try {
+    const res = await fetch(
+      `https://pro.edgex.exchange/api/v1/public/quote/getDepth?contractId=${contractId}&level=200`
+    );
+    const data = await res.json();
+
+    const bids: OrderBookLevel[] = (data.bids || []).map(
+      (l: { price: string; size: string }) => ({ price: parseFloat(l.price), size: parseFloat(l.size) })
+    );
+    const asks: OrderBookLevel[] = (data.asks || []).map(
+      (l: { price: string; size: string }) => ({ price: parseFloat(l.price), size: parseFloat(l.size) })
+    );
+
+    return { exchange: "edgex", asset, bids, asks, timestamp: Date.now() };
+  } catch (e) {
+    return { exchange: "edgex", asset, bids: [], asks: [], timestamp: Date.now(), error: String(e) };
+  }
+}
+
 // ─── ROUTE HANDLER ─────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
@@ -401,6 +438,9 @@ export async function GET(request: NextRequest) {
     case "binance":
       result = await fetchBinance(asset, symbolOverride);
       break;
+    case "edgex":
+      result = await fetchEdgex(asset, symbolOverride);
+      break;
     default:
       return NextResponse.json(
         { error: `Unknown exchange: ${exchange}` },
@@ -432,6 +472,7 @@ export async function POST(request: NextRequest) {
     lighter: fetchLighter,
     aster: fetchAster,
     binance: fetchBinance,
+    edgex: fetchEdgex,
   };
 
   const results = await Promise.all(
