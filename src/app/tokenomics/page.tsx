@@ -398,18 +398,45 @@ export default function TokenomicsPage() {
                   <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--text-secondary)", fontStyle: "italic" }}>
                     {cfg.feeStructureNote}
                   </div>
-                  {totals.sourceUrl && (
-                    <a
-                      href={totals.sourceUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ fontSize: "10px", color: "#60a5fa", display: "block", marginTop: "4px" }}
-                    >
-                      Source ↗
-                    </a>
+                  <div style={{ display: "flex", gap: "12px", marginTop: "6px", flexWrap: "wrap" }}>
+                    {totals.sourceUrl && (
+                      <a
+                        href={totals.sourceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontSize: "10px", color: "#60a5fa" }}
+                      >
+                        Dashboard ↗
+                      </a>
+                    )}
+                    {totals.walletUrl && totals.walletUrl !== totals.sourceUrl && (
+                      <a
+                        href={totals.walletUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontSize: "10px", color: "#34d399" }}
+                      >
+                        On-chain ↗
+                      </a>
+                    )}
+                    {cfg.explorerUrl && (
+                      <a
+                        href={cfg.explorerUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontSize: "10px", color: "#a78bfa" }}
+                      >
+                        Wallet ↗
+                      </a>
+                    )}
+                  </div>
+                  {cfg.buybackWallet && (
+                    <div style={{ fontSize: "9px", color: "var(--text-secondary)", marginTop: "4px", fontFamily: "monospace", letterSpacing: "-0.02em", wordBreak: "break-all" as const }}>
+                      {cfg.buybackWallet}
+                    </div>
                   )}
                   <div style={{ fontSize: "10px", color: "var(--text-secondary)", marginTop: "4px" }}>
-                    Seed data as of {totals.lastUpdated}
+                    Updated {totals.lastUpdated}
                   </div>
                 </div>
               </div>
@@ -760,15 +787,19 @@ export default function TokenomicsPage() {
           30-day fees from DefiLlama (slugs: hyperliquid-perps, lighter-perps, aster-perps, edgex-perps). Refreshed every 5 minutes.
         </p>
         <p style={{ marginBottom: "6px" }}>
-          <strong>Buyback history:</strong> Hyperliquid Assistance Fund (assistancefund.top) — $644M / 28.5M HYPE YTD 2025.
-          Aster: AsterBurn.info — S3 (155.7M), Dec 5 2025 burn (77.86M), S4-5 Feb 5 2026 (98.4M).
-          Lighter and EdgeX: estimated from DefiLlama fee revenue using stated buyback rates.
+          <strong>Buyback history — primary on-chain sources:</strong>{" "}
+          Hyperliquid: wallet <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>0xfefe…fefe</code> — hypurrscan.io.
+          Cumulative $1.083B verified via DefiLlama (April 2026). Monthly figures are proportional estimates; verify per-tx on hypurrscan.
+          Aster: buyback wallet <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>0x6648…BE0F</code> on BSC → burns to dead address.
+          Total confirmed burned: 98.86M ASTER (asterburn.info S1–S6). Analytics: tokenomist.ai/aster-2/buyback.
+          Lighter: treasury account 0 (app.lighter.xyz/explorer/accounts/0) — daily TWAP. Analytics: tokenomist.ai/lighter/buyback.
+          EdgeX: first confirmed burn 2.528M EDGE (April 2 2026). Token: <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>0xb007…a241</code> on Ethereum. Daily 24h burns ongoing.
         </p>
         <p>
-          <strong>Caveats:</strong> Lighter and EdgeX buyback rates are estimates — not publicly disclosed.
-          EdgeX EDGE token launched March 31 2026; buyback history is nil.
-          Aster emission overhaul (March 30 2026) reduced monthly emissions by 97%.
-          All seed data as of 2026-03-31. DYOR. Not investment advice.
+          <strong>Caveats:</strong> Hyperliquid and Aster monthly breakdown figures are proportional estimates — exact daily amounts on-chain via hypurrscan.io / BscScan.
+          Lighter buyback rate (50%) is estimated — not publicly disclosed. EdgeX buyback rate (40%) is estimated.
+          Aster emission overhaul (March 30 2026) reduced monthly emissions by 97%; S6 figures are small.
+          All seed data as of 2026-04-05. DYOR. Not investment advice.
         </p>
       </div>
 
