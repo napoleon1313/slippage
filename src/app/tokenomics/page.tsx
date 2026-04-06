@@ -10,6 +10,7 @@ import {
   calcPE, aggregateBuybacksByGranularity, fmtCompact, fmtTokens,
   type LiveTokenData, type TimeGranularity, type TokenomicsApiResponse,
 } from "@/lib/tokenomics";
+import type { TokenBuybackData, BuybacksApiResponse } from "@/app/api/buybacks/route";
 
 // ─── Helpers ───────────────────────────────────────────────────
 
@@ -121,6 +122,14 @@ export default function TokenomicsPage() {
   const [supplyBasis, setSupplyBasis] = useState<"circ" | "fdv">("circ");
   const [showCumulative, setShowCumulative] = useState(false);
 
+  // Live on-chain buyback data
+  const [liveBuybacks, setLiveBuybacks] = useState<TokenBuybackData[] | null>(null);
+  const [liveBuybacksLoading, setLiveBuybacksLoading] = useState(true);
+  const [liveDaysStr, setLiveDaysStr] = useState<"30" | "60" | "90">("90");
+  const liveDays = parseInt(liveDaysStr) as 30 | 60 | 90;
+  const [liveMetric, setLiveMetric] = useState<"usd" | "tokens">("usd");
+  const [liveShowCumulative, setLiveShowCumulative] = useState(true);
+
   useEffect(() => {
     fetch("/api/tokenomics")
       .then((r) => r.json())
@@ -128,6 +137,15 @@ export default function TokenomicsPage() {
       .catch(() => setLiveData(null))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    setLiveBuybacksLoading(true);
+    fetch(`/api/buybacks?days=${liveDays}`)
+      .then((r) => r.json())
+      .then((d: BuybacksApiResponse) => setLiveBuybacks(d.data))
+      .catch(() => setLiveBuybacks(null))
+      .finally(() => setLiveBuybacksLoading(false));
+  }, [liveDays]);
 
   // Merge seed + live
   const records = useMemo(() =>
@@ -222,6 +240,49 @@ export default function TokenomicsPage() {
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buybackGranularity, buybackMetric, records]);
+
+  // Live on-chain chart data — daily rows merged across all tokens
+  const liveBuybackChartData = useMemo(() => {
+    if (!liveBuybacks) return [];
+    const allDates = new Set<string>();
+    const byToken: Record<string, Map<string, { tokens: number; usd: number; txCount: number }>> = {};
+
+    for (const td of liveBuybacks) {
+      byToken[td.tokenId] = new Map(td.daily.map((d) => [d.date, d]));
+      td.daily.forEach((d) => allDates.add(d.date));
+    }
+
+    const cumUsd: Record<string, number> = {};
+    const cumTokens: Record<string, number> = {};
+
+    return Array.from(allDates)
+      .sort()
+      .map((date) => {
+        const row: Record<string, number | string> = { date };
+        for (const cfg of TOKEN_CONFIGS) {
+          const entry = byToken[cfg.id]?.get(date);
+          const usd = entry?.usd ?? 0;
+          const tokens = entry?.tokens ?? 0;
+          row[cfg.id] = liveMetric === "usd" ? usd : tokens;
+          row[`${cfg.id}_tx`] = entry?.txCount ?? 0;
+          cumUsd[cfg.id] = (cumUsd[cfg.id] ?? 0) + usd;
+          cumTokens[cfg.id] = (cumTokens[cfg.id] ?? 0) + tokens;
+          row[`${cfg.id}_cum`] = liveMetric === "usd" ? cumUsd[cfg.id] : cumTokens[cfg.id];
+        }
+        return row;
+      });
+  }, [liveBuybacks, liveMetric]);
+
+  // Summary stats for the live section header
+  const liveSummary = useMemo(() => {
+    if (!liveBuybacks) return null;
+    return liveBuybacks.map((td) => {
+      const totalUsd = td.daily.reduce((s, d) => s + d.usd, 0);
+      const totalTokens = td.daily.reduce((s, d) => s + d.tokens, 0);
+      const totalTx = td.daily.reduce((s, d) => s + d.txCount, 0);
+      return { tokenId: td.tokenId, totalUsd, totalTokens, totalTx, isLive: td.isLive, source: td.source };
+    });
+  }, [liveBuybacks]);
 
   // % of supply bought back
   const supplyPctData = useMemo(() =>
@@ -540,6 +601,159 @@ export default function TokenomicsPage() {
             </Bar>
           </BarChart>
         </ResponsiveContainer>
+      </div>
+
+      {/* ── SECTION B2: Live On-Chain Buybacks ────────────────── */}
+      <div style={{ ...section }}>
+        {/* Header row */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", marginBottom: "16px" }}>
+          <div>
+            <h2 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
+              Live On-Chain Buybacks
+            </h2>
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "4px" }}>
+              Daily buyback activity pulled directly from on-chain sources. HYPE: HL API (public). Lighter/Aster: DefiLlama fees proxy. EdgeX: Etherscan burns.
+            </p>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", alignItems: "flex-end" }}>
+            <PillGroup
+              options={[{ label: "USD Value", value: "usd" }, { label: "Token Count", value: "tokens" }]}
+              value={liveMetric}
+              onChange={setLiveMetric}
+            />
+            <div style={{ display: "flex", gap: "8px" }}>
+              <PillGroup
+                options={[{ label: "30d", value: "30" }, { label: "60d", value: "60" }, { label: "90d", value: "90" }]}
+                value={liveDaysStr}
+                onChange={setLiveDaysStr}
+              />
+              <button
+                onClick={() => setLiveShowCumulative((v) => !v)}
+                style={{
+                  padding: "3px 10px", borderRadius: "999px", fontSize: "12px",
+                  fontWeight: liveShowCumulative ? 600 : 400,
+                  background: liveShowCumulative ? "#7c3aed" : "var(--bg-secondary)",
+                  color: liveShowCumulative ? "#fff" : "var(--text-secondary)",
+                  border: `1px solid ${liveShowCumulative ? "#7c3aed" : "var(--border)"}`,
+                  cursor: "pointer",
+                }}
+              >
+                Cumulative
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Summary stat row */}
+        {liveSummary && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "10px", marginBottom: "16px" }}>
+            {liveSummary.map((s) => {
+              const cfg = TOKEN_CONFIGS.find((c) => c.id === s.tokenId)!;
+              const lb = liveBuybacks?.find((b) => b.tokenId === s.tokenId);
+              return (
+                <div key={s.tokenId} style={{ background: "var(--bg-secondary)", borderRadius: "6px", padding: "10px 12px", borderLeft: `3px solid ${cfg.color}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px" }}>
+                    <span style={{ fontWeight: 700, fontSize: "13px" }}>{cfg.ticker}</span>
+                    <span style={{
+                      fontSize: "9px", padding: "1px 5px", borderRadius: "999px", fontWeight: 600,
+                      background: s.isLive ? "#4ade8022" : "#f59e0b22",
+                      color: s.isLive ? "#4ade80" : "#f59e0b",
+                    }}>
+                      {s.isLive ? "🔴 LIVE" : "~ EST"}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--text-primary)" }}>
+                    {s.totalUsd > 0 ? fmtCompact(s.totalUsd) : (s.totalTokens > 0 ? fmtTokens(s.totalTokens) + " " + cfg.ticker : "—")}
+                  </div>
+                  <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                    {liveDays}d buybacks
+                    {s.totalTx > 0 && ` · ${s.totalTx.toLocaleString()} txs`}
+                  </div>
+                  {lb?.error && (
+                    <div style={{ fontSize: "9px", color: "#f87171", marginTop: "3px", wordBreak: "break-all" as const }}>
+                      {lb.error.slice(0, 80)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Chart */}
+        {liveBuybacksLoading ? (
+          <div style={{ height: "340px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: "13px" }}>
+            Fetching on-chain data…
+          </div>
+        ) : liveBuybackChartData.length === 0 ? (
+          <div style={{ height: "200px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: "13px" }}>
+            No data returned. Check API availability.
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={360}>
+            <ComposedChart data={liveBuybackChartData} margin={{ top: 10, right: liveShowCumulative ? 64 : 20, left: 10, bottom: 5 }}>
+              <CartesianGrid {...CHART_GRID} />
+              <XAxis dataKey="date" tick={{ ...CHART_AXIS, fontSize: 10 }} angle={-25} textAnchor="end" height={44} />
+              <YAxis yAxisId="left" tick={CHART_AXIS} tickFormatter={liveMetric === "usd" ? fmtCompact : (v) => fmtTokens(v as number)} />
+              {liveShowCumulative && (
+                <YAxis yAxisId="right" orientation="right" tick={CHART_AXIS} tickFormatter={liveMetric === "usd" ? fmtCompact : (v) => fmtTokens(v as number)} />
+              )}
+              <Tooltip
+                {...TOOLTIP_STYLE}
+                formatter={(value, name) => {
+                  const n = name as string;
+                  const isCum = n.endsWith("_cum");
+                  const id = isCum ? n.replace("_cum", "") : n;
+                  const ticker = TOKEN_CONFIGS.find((c) => c.id === id)?.ticker ?? id;
+                  const fmt = liveMetric === "usd" ? fmtCompact(value as number) : fmtTokens(value as number);
+                  return [fmt, isCum ? `${ticker} Cumul.` : ticker];
+                }}
+              />
+              <Legend
+                formatter={(v) => {
+                  const s = v as string;
+                  const isCum = s.endsWith("_cum");
+                  const id = isCum ? s.replace("_cum", "") : s;
+                  const ticker = TOKEN_CONFIGS.find((c) => c.id === id)?.ticker ?? id;
+                  return isCum ? `${ticker} (cum.)` : ticker;
+                }}
+                wrapperStyle={{ fontSize: "11px" }}
+              />
+              {TOKEN_CONFIGS.map((cfg) => (
+                <Bar yAxisId="left" key={cfg.id} dataKey={cfg.id} name={cfg.id} fill={cfg.color} radius={[2, 2, 0, 0]} fillOpacity={0.85} stackId="daily" />
+              ))}
+              {liveShowCumulative && TOKEN_CONFIGS.map((cfg) => (
+                <Line
+                  yAxisId="right"
+                  key={`${cfg.id}_cum`}
+                  dataKey={`${cfg.id}_cum`}
+                  name={`${cfg.id}_cum`}
+                  stroke={cfg.color}
+                  strokeWidth={2}
+                  dot={false}
+                  strokeDasharray="4 2"
+                  connectNulls
+                />
+              ))}
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
+
+        {/* Per-source legend */}
+        {liveBuybacks && (
+          <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "4px" }}>
+            {liveBuybacks.map((td) => {
+              const cfg = TOKEN_CONFIGS.find((c) => c.id === td.tokenId)!;
+              return (
+                <div key={td.tokenId} style={{ fontSize: "10px", color: "var(--text-secondary)", display: "flex", gap: "6px", alignItems: "flex-start" }}>
+                  <span style={{ color: cfg.color, fontWeight: 700, flexShrink: 0 }}>{cfg.ticker}:</span>
+                  <span style={{ color: td.isLive ? "#4ade80" : "#f59e0b" }}>{td.isLive ? "🔴" : "~"}</span>
+                  <span>{td.source}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* ── SECTION C: Buyback History ─────────────────────────── */}
