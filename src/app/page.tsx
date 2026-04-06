@@ -31,10 +31,25 @@ interface SnapshotEntry {
   error?: string;
 }
 
+interface DepthStats {
+  exchange: string;
+  asset: string;
+  bidLevels: number;
+  askLevels: number;
+  bestBid: number;
+  bestAsk: number;
+  spreadBps: number;
+  midPrice: number;
+  totalBidNotional: number;   // sum(price × size) across all bid levels
+  totalAskNotional: number;   // sum(price × size) across all ask levels
+  maxFillableNotional: number; // min of the two — governs max provable fill
+}
+
 interface Snapshot {
   id: string;
   timestamp: Date;
   entries: SnapshotEntry[];
+  depthStats: DepthStats[];   // raw order book depth audit per exchange×asset
 }
 
 type Method = "slippage" | "allin";
@@ -49,6 +64,45 @@ interface CustomAsset {
 
 // ─── Helpers ───────────────────────────────────────────────────
 
+function computeDepthStats(
+  books: Record<string, Record<string, OrderBook>>
+): DepthStats[] {
+  const stats: DepthStats[] = [];
+  for (const [exchange, assetBooks] of Object.entries(books)) {
+    for (const [asset, book] of Object.entries(assetBooks)) {
+      if (!book.bids?.length && !book.asks?.length) continue;
+      const bestBid = book.bids?.[0]?.price ?? 0;
+      const bestAsk = book.asks?.[0]?.price ?? 0;
+      const mid = bestBid && bestAsk ? (bestBid + bestAsk) / 2 : bestBid || bestAsk;
+      const spreadBps = mid > 0 && bestBid && bestAsk
+        ? ((bestAsk - bestBid) / mid) * 10000
+        : 0;
+      const totalBidNotional = (book.bids ?? []).reduce(
+        (s, l) => s + l.price * l.size, 0
+      );
+      const totalAskNotional = (book.asks ?? []).reduce(
+        (s, l) => s + l.price * l.size, 0
+      );
+      stats.push({
+        exchange,
+        asset,
+        bidLevels: book.bids?.length ?? 0,
+        askLevels: book.asks?.length ?? 0,
+        bestBid,
+        bestAsk,
+        spreadBps,
+        midPrice: mid,
+        totalBidNotional,
+        totalAskNotional,
+        maxFillableNotional: Math.min(totalBidNotional, totalAskNotional),
+      });
+    }
+  }
+  return stats.sort((a, b) =>
+    a.exchange.localeCompare(b.exchange) || a.asset.localeCompare(b.asset)
+  );
+}
+
 function formatBps(val: number | null | undefined): string {
   if (val === null || val === undefined) return "--";
   return val.toFixed(2);
@@ -58,6 +112,13 @@ function formatUsd(n: number): string {
   if (n >= 1_000_000) return `$${n / 1_000_000}M`;
   if (n >= 1_000) return `$${n / 1_000}K`;
   return `$${n}`;
+}
+
+function fmtDepthUsd(n: number): string {
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+  return `$${n.toFixed(0)}`;
 }
 
 // Merge ASSETS + customAssets into a single list
@@ -99,6 +160,8 @@ export default function Dashboard() {
   >({}); // exchange -> asset -> notional -> side -> result
   const [lastFetchTime, setLastFetchTime] = useState<Date | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [expandedSnaps, setExpandedSnaps] = useState<Set<string>>(new Set());
+  const [showLiveDepth, setShowLiveDepth] = useState(false);
   const [enabledExchanges, setEnabledExchanges] = useState<string[]>(
     EXCHANGES.map((e) => e.id)
   );
@@ -331,25 +394,54 @@ export default function Dashboard() {
       id: `snap-${Date.now()}`,
       timestamp: new Date(),
       entries,
+      depthStats: computeDepthStats(currentData),
     };
 
     setSnapshots((prev) => [snap, ...prev]);
   }, [results, errors, enabledExchanges, enabledAssets, allAssets, getFeeBps]);
 
   // ─── Export snapshot as CSV ────────────────────────────────
+  // Produces a single CSV with two sections separated by a blank line:
+  //   Section 1 — Slippage results (one row per exchange × asset × notional × side)
+  //   Section 2 — Order book depth audit (one row per exchange × asset)
 
   const exportCsv = useCallback(
     (snap: Snapshot) => {
-      const header =
-        "timestamp,exchange,asset,notional,side,slippage_bps,fee_bps,total_cost_bps,mid_price,avg_fill_price,fully_filled,error\n";
-      const rows = snap.entries
+      const ts = snap.timestamp.toISOString();
+
+      // Section 1: slippage
+      const slippageHeader =
+        "SLIPPAGE RESULTS\n" +
+        "timestamp,exchange,asset,notional,side,slippage_bps,fee_bps,total_cost_bps," +
+        "mid_price,avg_fill_price,fully_filled,error\n";
+      const slippageRows = snap.entries
         .map(
           (e) =>
-            `${snap.timestamp.toISOString()},${e.exchange},${e.asset},${e.notional},${e.side},${e.slippageBps ?? ""},${e.feeBps},${e.totalCostBps ?? ""},${e.midPrice ?? ""},${e.avgFillPrice ?? ""},${e.fullyFilled},${e.error ?? ""}`
+            `${ts},${e.exchange},${e.asset},${e.notional},${e.side},` +
+            `${e.slippageBps ?? ""},${e.feeBps},${e.totalCostBps ?? ""},` +
+            `${e.midPrice ?? ""},${e.avgFillPrice ?? ""},${e.fullyFilled},${e.error ?? ""}`
         )
         .join("\n");
 
-      const blob = new Blob([header + rows], { type: "text/csv" });
+      // Section 2: order book depth audit
+      const depthHeader =
+        "\n\nORDER BOOK DEPTH AUDIT\n" +
+        "timestamp,exchange,asset,bid_levels,ask_levels,best_bid,best_ask," +
+        "spread_bps,mid_price,total_bid_notional_usd,total_ask_notional_usd," +
+        "max_fillable_notional_usd\n";
+      const depthRows = (snap.depthStats ?? [])
+        .map(
+          (d) =>
+            `${ts},${d.exchange},${d.asset},${d.bidLevels},${d.askLevels},` +
+            `${d.bestBid.toFixed(4)},${d.bestAsk.toFixed(4)},` +
+            `${d.spreadBps.toFixed(3)},${d.midPrice.toFixed(4)},` +
+            `${d.totalBidNotional.toFixed(0)},${d.totalAskNotional.toFixed(0)},` +
+            `${d.maxFillableNotional.toFixed(0)}`
+        )
+        .join("\n");
+
+      const csv = slippageHeader + slippageRows + depthHeader + depthRows;
+      const blob = new Blob([csv], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -889,42 +981,227 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Live Order Book Depth */}
+      {lastFetchTime && (() => {
+        const liveDepth = computeDepthStats(currentData);
+        if (liveDepth.length === 0) return null;
+        return (
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-bold">Order Book Depth</h2>
+              <button
+                onClick={() => setShowLiveDepth((v) => !v)}
+                className="px-3 py-1 rounded text-sm font-medium"
+                style={{
+                  background: "var(--bg-secondary)",
+                  border: "1px solid var(--border)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {showLiveDepth ? "Hide" : "Show"}
+              </button>
+            </div>
+            {showLiveDepth && (
+              <div
+                className="rounded-lg overflow-hidden"
+                style={{ border: "1px solid var(--border)" }}
+              >
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr style={{ background: "var(--bg-card)" }}>
+                      <th className="text-left p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Exchange</th>
+                      <th className="text-left p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Asset</th>
+                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Bid Lvls</th>
+                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Ask Lvls</th>
+                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Best Bid</th>
+                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Best Ask</th>
+                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Spread</th>
+                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Bid Depth</th>
+                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Ask Depth</th>
+                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Max Fill</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {liveDepth.map((d, i) => {
+                      const ex = EXCHANGES.find((e) => e.id === d.exchange);
+                      return (
+                        <tr
+                          key={`${d.exchange}-${d.asset}`}
+                          style={{
+                            borderTop: i > 0 ? "1px solid var(--border)" : undefined,
+                          }}
+                        >
+                          <td className="p-3">
+                            <span
+                              className="text-xs font-medium px-2 py-0.5 rounded"
+                              style={{
+                                background: (ex?.color ?? "#888") + "22",
+                                color: ex?.color ?? "#888",
+                              }}
+                            >
+                              {ex?.name ?? d.exchange}
+                            </span>
+                          </td>
+                          <td className="p-3 font-medium text-sm">{d.asset}</td>
+                          <td className="p-3 text-right font-mono text-sm" style={{ color: "var(--accent-green)" }}>{d.bidLevels.toLocaleString()}</td>
+                          <td className="p-3 text-right font-mono text-sm" style={{ color: "var(--accent-red, #f87171)" }}>{d.askLevels.toLocaleString()}</td>
+                          <td className="p-3 text-right font-mono text-sm">{d.bestBid > 0 ? d.bestBid.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "--"}</td>
+                          <td className="p-3 text-right font-mono text-sm">{d.bestAsk > 0 ? d.bestAsk.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "--"}</td>
+                          <td
+                            className="p-3 text-right font-mono text-sm"
+                            style={{ color: d.spreadBps < 2 ? "var(--accent-green)" : d.spreadBps < 10 ? "#facc15" : "#f87171" }}
+                          >
+                            {d.spreadBps.toFixed(2)} bps
+                          </td>
+                          <td className="p-3 text-right font-mono text-sm">{fmtDepthUsd(d.totalBidNotional)}</td>
+                          <td className="p-3 text-right font-mono text-sm">{fmtDepthUsd(d.totalAskNotional)}</td>
+                          <td
+                            className="p-3 text-right font-mono text-sm font-semibold"
+                            style={{ color: "var(--accent-blue, #60a5fa)" }}
+                          >
+                            {fmtDepthUsd(d.maxFillableNotional)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div className="px-3 py-2 text-xs" style={{ borderTop: "1px solid var(--border)", color: "var(--text-secondary)", background: "var(--bg-card)" }}>
+                  Bid/Ask Depth = sum(price × size) across all levels. Max Fill = min(Bid Depth, Ask Depth) — the largest notional provably fillable at this snapshot.
+                  Spread colored: green &lt; 2 bps · amber &lt; 10 bps · red ≥ 10 bps.
+                  Captured {lastFetchTime.toLocaleTimeString()}.
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Audit Trail / Snapshots */}
       {snapshots.length > 0 && (
         <div className="mb-8">
           <h2 className="text-lg font-bold mb-3">Audit Trail — Saved Snapshots</h2>
-          <div className="space-y-2">
-            {snapshots.map((snap) => (
-              <div
-                key={snap.id}
-                className="flex items-center justify-between p-3 rounded-lg"
-                style={{
-                  background: "var(--bg-card)",
-                  border: "1px solid var(--border)",
-                }}
-              >
-                <div>
-                  <span className="text-sm font-medium">
-                    {snap.timestamp.toLocaleDateString()}{" "}
-                    {snap.timestamp.toLocaleTimeString()}
-                  </span>
-                  <span className="text-xs ml-3" style={{ color: "var(--text-secondary)" }}>
-                    {snap.entries.filter((e) => e.side === "avg").length} data points
-                  </span>
-                </div>
-                <button
-                  onClick={() => exportCsv(snap)}
-                  className="px-3 py-1 rounded text-sm font-medium"
-                  style={{
-                    background: "var(--bg-secondary)",
-                    border: "1px solid var(--border)",
-                    color: "var(--accent-blue)",
-                  }}
+          <div className="space-y-3">
+            {snapshots.map((snap) => {
+              const isExpanded = expandedSnaps.has(snap.id);
+              const toggleExpand = () =>
+                setExpandedSnaps((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(snap.id)) next.delete(snap.id);
+                  else next.add(snap.id);
+                  return next;
+                });
+              return (
+                <div
+                  key={snap.id}
+                  className="rounded-lg overflow-hidden"
+                  style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
                 >
-                  Export CSV
-                </button>
-              </div>
-            ))}
+                  {/* Header row */}
+                  <div className="flex items-center justify-between p-3">
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-medium">
+                        {snap.timestamp.toLocaleDateString()}{" "}
+                        {snap.timestamp.toLocaleTimeString()}
+                      </span>
+                      <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                        {snap.entries.filter((e) => e.side === "avg").length} data points
+                      </span>
+                      {snap.depthStats?.length > 0 && (
+                        <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                          · {snap.depthStats.length} book{snap.depthStats.length !== 1 ? "s" : ""} captured
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      {snap.depthStats?.length > 0 && (
+                        <button
+                          onClick={toggleExpand}
+                          className="px-3 py-1 rounded text-sm font-medium"
+                          style={{
+                            background: isExpanded ? "#2563eb22" : "var(--bg-secondary)",
+                            border: `1px solid ${isExpanded ? "#2563eb66" : "var(--border)"}`,
+                            color: isExpanded ? "#60a5fa" : "var(--text-secondary)",
+                          }}
+                        >
+                          {isExpanded ? "▲ Hide Depth" : "▼ Show Depth"}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => exportCsv(snap)}
+                        className="px-3 py-1 rounded text-sm font-medium"
+                        style={{
+                          background: "var(--bg-secondary)",
+                          border: "1px solid var(--border)",
+                          color: "var(--accent-blue)",
+                        }}
+                      >
+                        Export CSV
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Depth stats table (collapsible) */}
+                  {isExpanded && snap.depthStats?.length > 0 && (
+                    <div style={{ borderTop: "1px solid var(--border)" }}>
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr style={{ background: "var(--bg-secondary)" }}>
+                            <th className="text-left px-3 py-2 font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Exchange</th>
+                            <th className="text-left px-3 py-2 font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Asset</th>
+                            <th className="text-right px-3 py-2 font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Bids</th>
+                            <th className="text-right px-3 py-2 font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Asks</th>
+                            <th className="text-right px-3 py-2 font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Best Bid</th>
+                            <th className="text-right px-3 py-2 font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Best Ask</th>
+                            <th className="text-right px-3 py-2 font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Spread</th>
+                            <th className="text-right px-3 py-2 font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Bid Depth</th>
+                            <th className="text-right px-3 py-2 font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Ask Depth</th>
+                            <th className="text-right px-3 py-2 font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Max Fill</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {snap.depthStats.map((d, i) => {
+                            const ex = EXCHANGES.find((e) => e.id === d.exchange);
+                            return (
+                              <tr
+                                key={`${d.exchange}-${d.asset}`}
+                                style={{ borderTop: i > 0 ? "1px solid var(--border)" : undefined }}
+                              >
+                                <td className="px-3 py-2">
+                                  <span
+                                    className="font-medium px-1.5 py-0.5 rounded"
+                                    style={{ background: (ex?.color ?? "#888") + "22", color: ex?.color ?? "#888" }}
+                                  >
+                                    {ex?.name ?? d.exchange}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 font-medium">{d.asset}</td>
+                                <td className="px-3 py-2 text-right font-mono" style={{ color: "var(--accent-green)" }}>{d.bidLevels.toLocaleString()}</td>
+                                <td className="px-3 py-2 text-right font-mono" style={{ color: "#f87171" }}>{d.askLevels.toLocaleString()}</td>
+                                <td className="px-3 py-2 text-right font-mono">{d.bestBid > 0 ? d.bestBid.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "--"}</td>
+                                <td className="px-3 py-2 text-right font-mono">{d.bestAsk > 0 ? d.bestAsk.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "--"}</td>
+                                <td
+                                  className="px-3 py-2 text-right font-mono"
+                                  style={{ color: d.spreadBps < 2 ? "var(--accent-green)" : d.spreadBps < 10 ? "#facc15" : "#f87171" }}
+                                >
+                                  {d.spreadBps.toFixed(2)} bps
+                                </td>
+                                <td className="px-3 py-2 text-right font-mono">{fmtDepthUsd(d.totalBidNotional)}</td>
+                                <td className="px-3 py-2 text-right font-mono">{fmtDepthUsd(d.totalAskNotional)}</td>
+                                <td className="px-3 py-2 text-right font-mono font-semibold" style={{ color: "#60a5fa" }}>{fmtDepthUsd(d.maxFillableNotional)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                      <div className="px-3 py-2 text-xs" style={{ borderTop: "1px solid var(--border)", color: "var(--text-secondary)" }}>
+                        Max Fill = min(Bid Depth, Ask Depth). Spread: green &lt; 2 bps · amber &lt; 10 bps · red ≥ 10 bps.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
