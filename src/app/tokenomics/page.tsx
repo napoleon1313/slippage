@@ -353,9 +353,6 @@ export default function TokenomicsPage() {
 
       {/* Page header */}
       <div style={{ marginBottom: "28px" }}>
-        <p style={{ fontSize: "11px", color: "var(--text-secondary)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "6px" }}>
-          CRYPTO COE — TOKENOMICS RESEARCH
-        </p>
         <h1 style={{ fontSize: "28px", fontWeight: 800, margin: 0 }}>
           Perp DEX Tokenomics Comparison
         </h1>
@@ -1003,22 +1000,23 @@ export default function TokenomicsPage() {
         <p style={{ marginBottom: "6px" }}>
           <strong>Buyback history — primary on-chain sources:</strong>{" "}
           Hyperliquid: wallet <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>0xfefe…fefe</code> — hypurrscan.io.
-          Cumulative $1.083B verified via DefiLlama (April 2026). Monthly figures are proportional estimates; verify per-tx on hypurrscan.
+          Dec 24 2025: 85% validator vote formally burned all AF tokens. ~43M HYPE / $1.3B+ cumulative.
+          Quarterly verified totals: Q3 2025 $316.76M · Q4 2025 $255.05M · Q1 2026 $192.25M. Monthly splits proportional est.
           Aster: buyback wallet <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>0x6648…BE0F</code> on BSC → burns to dead address.
-          Total confirmed burned: 98.86M ASTER (asterburn.info S1–S6). Analytics: tokenomist.ai/aster-2/buyback.
-          Lighter: treasury account 0 (app.lighter.xyz/explorer/accounts/0) — daily TWAP. Analytics: tokenomist.ai/lighter/buyback.
-          EdgeX: first confirmed burn 2.528M EDGE (April 2 2026). Token: <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>0xb007…a241</code> on Ethereum. Daily 24h burns ongoing.
+          266.3M ASTER bought back / $187M spent (Mar 9 2026). 176M+ permanently burned (S1–S5). Source: asterburn.info.
+          Lighter: treasury account 0 (app.lighter.xyz/explorer/accounts/0) — daily TWAP from Jan 2026. Analytics: tokenomist.ai/lighter/buyback.
+          EdgeX: first confirmed burn 2,528,370 EDGE (~$380K, April 2 2026). Token: <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>0xb007…a241</code> on Ethereum. Daily 24h burns from fee revenue.
         </p>
         <p>
-          <strong>Caveats:</strong> Hyperliquid and Aster monthly breakdown figures are proportional estimates — exact daily amounts on-chain via hypurrscan.io / BscScan.
+          <strong>Caveats:</strong> Monthly HYPE figures are proportional estimates within verified quarterly totals — exact daily amounts on-chain at hypurrscan.io.
           Lighter buyback rate (50%) is estimated — not publicly disclosed. EdgeX buyback rate (40%) is estimated.
-          Aster emission overhaul (March 30 2026) reduced monthly emissions by 97%; S6 figures are small.
-          All seed data as of 2026-04-05. DYOR. Not investment advice.
+          ASTER S4+S5 burn USD value estimated at ~$0.22/token (price at time). S6 auto-burns ongoing daily.
+          All seed data updated May 30 2026. DYOR. Not investment advice.
         </p>
       </div>
 
       <div style={{ textAlign: "center", fontSize: "11px", color: "var(--text-secondary)", marginBottom: "24px" }}>
-        Crypto Centre of Excellence — Tokenomics Research | Built April 2026
+        Perp DEX Tokenomics Research
       </div>
     </div>
   );

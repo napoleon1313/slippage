@@ -322,7 +322,7 @@ const EDGE_TOKEN_CONTRACT = "0xb0076de78dc50581770bba1d211ddc0ad4f2a241";
 
 // Confirmed seed events for EdgeX (pre-loaded while Etherscan API stabilises)
 const EDGEX_SEED: DailyBuyback[] = [
-  { date: "2026-04-02", tokens: 2_528_000, usd: 2_300_000, txCount: 1 },
+  { date: "2026-04-02", tokens: 2_528_370, usd: 380_000, txCount: 1 },
 ];
 
 async function fetchEdgeX(days: number): Promise<TokenBuybackData> {
