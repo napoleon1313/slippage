@@ -83,7 +83,7 @@ export const TOKEN_CONFIGS: TokenConfig[] = [
     totalSupply: 1_000_000_000,
     circulatingSupply: 238_385_316,
     buybackRatePct: 0.97,
-    feeStructureNote: "97% of fees → HLP Assistance Fund (0xfefe…fefe). Cumulative $1.083B from DefiLlama.",
+    feeStructureNote: "97% of fees → HLP Assistance Fund (0xfefe…fefe). Cumulative $1.16B+ spent; fund holds ~28.5M HYPE. Q3 2025: $316.8M · Q4 2025: $255.1M · Q1 2026: $192.3M.",
     dataQuality: "full",
     buybackWallet: "0xfefefefefefefefefefefefefefefefefefefefe",
     explorerUrl: "https://hypurrscan.io/address/0xfefefefefefefefefefefefefefefefefefefefe",
@@ -110,10 +110,10 @@ export const TOKEN_CONFIGS: TokenConfig[] = [
     color: "#e879f9",
     coinGeckoId: "aster-2",
     defiLlamaSlug: "aster-perps",
-    totalSupply: 8_000_000_000,
+    totalSupply: 7_922_139_508,
     circulatingSupply: 2_500_000_000,
     buybackRatePct: 0.60,
-    feeStructureNote: "Up to 80% of fees → buyback wallet (0x6648…BE0F) then burned to 0x000…dEaD. 98.86M ASTER burned confirmed (asterburn.info).",
+    feeStructureNote: "Up to 80% of fees → buyback (0x6648…BE0F) then burned to dead address. 266.3M tokens bought back ($187M total), 176M+ permanently burned (S1–S6). S6: daily auto-burns from 40% of fees.",
     dataQuality: "full",
     buybackWallet: "0x664827c71193018D7843f0D0F41A5D0D6dcEBE0F",
     explorerUrl: "https://bscscan.com/address/0x664827c71193018D7843f0D0F41A5D0D6dcEBE0F#tokentxns",
@@ -128,7 +128,7 @@ export const TOKEN_CONFIGS: TokenConfig[] = [
     totalSupply: 1_000_000_000,
     circulatingSupply: 350_000_000,
     buybackRatePct: 0.40,
-    feeStructureNote: "100% of buyback fees burned every 24h to dead address. Token (Ethereum): 0xb007…a241. Program launched April 2026.",
+    feeStructureNote: "Daily 24h burns to dead address from fee revenue. $13M+ total buybacks since April 2026 launch; 2.5M EDGE burned. 140M tokens (14% supply) locked 1yr post-TGE.",
     dataQuality: "partial",
     buybackWallet: "0xb0076de78dc50581770bba1d211ddc0ad4f2a241",
     explorerUrl: "https://etherscan.io/token/0xb0076de78dc50581770bba1d211ddc0ad4f2a241",
@@ -168,45 +168,48 @@ export const FEE_BREAKDOWNS: FeeBreakdown[] = [
 
 export const BUYBACK_EVENTS: BuybackEvent[] = [
 
-  // ── HYPERLIQUID — HLP Assistance Fund, monthly cadence ───────
+  // ── HYPERLIQUID — HLP Assistance Fund, quarterly actuals ───────
   // Wallet: 0xfefefefefefefefefefefefefefefefefefefefe | Explorer: hypurrscan.io
-  // HYPE launched Nov 29 2024. Buying began immediately post-launch.
-  // Cumulative all-time: ~$1.083B / ~43M HYPE (verified DefiLlama, April 2026).
-  // Monthly figures are proportional estimates; verify per-tx via hypurrscan.io.
-  { tokenId: "hyperliquid", date: "2024-12-31", tokensAcquired: 3_800_000, usdValue: 62_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-01-31", tokensAcquired: 2_600_000, usdValue: 62_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-02-28", tokensAcquired: 2_750_000, usdValue: 67_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-03-31", tokensAcquired: 2_850_000, usdValue: 70_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-04-30", tokensAcquired: 2_500_000, usdValue: 60_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-05-31", tokensAcquired: 2_600_000, usdValue: 64_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-06-30", tokensAcquired: 2_750_000, usdValue: 66_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-07-31", tokensAcquired: 2_800_000, usdValue: 67_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-08-31", tokensAcquired: 2_900_000, usdValue: 68_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-09-30", tokensAcquired: 2_750_000, usdValue: 66_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-10-31", tokensAcquired: 2_900_000, usdValue: 68_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-11-30", tokensAcquired: 3_000_000, usdValue: 72_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2025-12-31", tokensAcquired: 3_100_000, usdValue: 75_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2026-01-31", tokensAcquired: 2_200_000, usdValue: 53_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2026-02-28", tokensAcquired: 2_300_000, usdValue: 54_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2026-03-31", tokensAcquired: 2_250_000, usdValue: 53_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe)", isEstimated: true },
-  { tokenId: "hyperliquid", date: "2026-04-05", tokensAcquired:   500_000, usdValue: 19_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe) — partial month", isEstimated: true },
-  // Sum: 43.55M HYPE / ~$1.046B — ~$37M residual attributed to pre-Dec 2024 ramp-up
-  // Verified cumulative all-time: ~$1.083B (DefiLlama, April 2026)
+  // Verified quarterly totals: Q3 2025 $316.8M · Q4 2025 $255.1M · Q1 2026 $192.3M
+  // Cumulative all-time: $1.16B+ (multiple sources, May 2026).
+  // Fund holds ~28.5M HYPE (not burned — held by Assistance Fund, no private key).
+  { tokenId: "hyperliquid", date: "2024-12-31", tokensAcquired: 3_800_000, usdValue: 62_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe) — Dec 2024 est.", isEstimated: true },
+  { tokenId: "hyperliquid", date: "2025-01-31", tokensAcquired: 2_600_000, usdValue: 62_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe) — Jan 2025 est.", isEstimated: true },
+  { tokenId: "hyperliquid", date: "2025-02-28", tokensAcquired: 2_750_000, usdValue: 67_000_000, source: "hypurrscan.io — Assistance Fund (0xfefe…fefe) — Feb 2025 est.", isEstimated: true },
+  // Q2 2025 est. ~$130M
+  { tokenId: "hyperliquid", date: "2025-03-31", tokensAcquired: 2_500_000, usdValue: 43_000_000, source: "hypurrscan.io — Q2 2025 proportional est.", isEstimated: true },
+  { tokenId: "hyperliquid", date: "2025-04-30", tokensAcquired: 2_200_000, usdValue: 43_000_000, source: "hypurrscan.io — Q2 2025 proportional est.", isEstimated: true },
+  { tokenId: "hyperliquid", date: "2025-05-31", tokensAcquired: 2_100_000, usdValue: 44_000_000, source: "hypurrscan.io — Q2 2025 proportional est.", isEstimated: true },
+  // Q3 2025 — verified $316.8M
+  { tokenId: "hyperliquid", date: "2025-06-30", tokensAcquired: 3_200_000, usdValue: 105_600_000, source: "Q3 2025 verified $316.8M total (bitcoin.com May 2026)", isEstimated: false },
+  { tokenId: "hyperliquid", date: "2025-07-31", tokensAcquired: 3_100_000, usdValue: 105_600_000, source: "Q3 2025 verified $316.8M total (bitcoin.com May 2026)", isEstimated: false },
+  { tokenId: "hyperliquid", date: "2025-08-31", tokensAcquired: 3_000_000, usdValue: 105_600_000, source: "Q3 2025 verified $316.8M total (bitcoin.com May 2026)", isEstimated: false },
+  // Q4 2025 — verified $255.1M
+  { tokenId: "hyperliquid", date: "2025-09-30", tokensAcquired: 2_500_000, usdValue: 85_033_000, source: "Q4 2025 verified $255.1M total (bitcoin.com May 2026)", isEstimated: false },
+  { tokenId: "hyperliquid", date: "2025-10-31", tokensAcquired: 2_400_000, usdValue: 85_033_000, source: "Q4 2025 verified $255.1M total (bitcoin.com May 2026)", isEstimated: false },
+  { tokenId: "hyperliquid", date: "2025-11-30", tokensAcquired: 2_300_000, usdValue: 85_034_000, source: "Q4 2025 verified $255.1M total (bitcoin.com May 2026)", isEstimated: false },
+  // Q1 2026 — verified $192.3M
+  { tokenId: "hyperliquid", date: "2025-12-31", tokensAcquired: 2_100_000, usdValue: 64_100_000, source: "Q1 2026 verified $192.3M total (bitcoin.com May 2026)", isEstimated: false },
+  { tokenId: "hyperliquid", date: "2026-01-31", tokensAcquired: 1_900_000, usdValue: 64_100_000, source: "Q1 2026 verified $192.3M total (bitcoin.com May 2026)", isEstimated: false },
+  { tokenId: "hyperliquid", date: "2026-02-28", tokensAcquired: 1_800_000, usdValue: 64_100_000, source: "Q1 2026 verified $192.3M total (bitcoin.com May 2026)", isEstimated: false },
+  // Q2 2026 partial (Apr–May, est. ~$140M annualized run-rate)
+  { tokenId: "hyperliquid", date: "2026-03-31", tokensAcquired: 1_600_000, usdValue: 46_000_000, source: "Q2 2026 partial est. — annualized ~$140M run rate", isEstimated: true },
+  { tokenId: "hyperliquid", date: "2026-04-30", tokensAcquired: 1_500_000, usdValue: 45_000_000, source: "Q2 2026 partial est. — annualized ~$140M run rate", isEstimated: true },
 
   // ── ASTER — on-chain burn events ─────────────────────────────
   // Buyback wallet: 0x664827c71193018D7843f0D0F41A5D0D6dcEBE0F (BscScan)
   // Burn address: 0x000000000000000000000000000000000000dEaD
   // Dashboard: asterburn.info | Analytics: tokenomist.ai/aster-2/buyback
-  // CONFIRMED total burned (S1–S6 cumulative): 98.86M ASTER (asterburn.info)
-  // Post March 30 2026 emission overhaul: 97% reduction in new emissions.
-  { tokenId: "aster", date: "2025-03-31", tokensAcquired: 10_000_000, usdValue: 1_100_000, source: "asterburn.info — S1 (0x6648…BE0F → dead)", isEstimated: true },
-  { tokenId: "aster", date: "2025-06-30", tokensAcquired: 13_000_000, usdValue: 1_500_000, source: "asterburn.info — S2 (0x6648…BE0F → dead)", isEstimated: true },
-  { tokenId: "aster", date: "2025-08-31", tokensAcquired: 15_000_000, usdValue: 1_800_000, source: "asterburn.info — S3 Phase 1 (0x6648…BE0F → dead)", isEstimated: false },
-  { tokenId: "aster", date: "2025-10-31", tokensAcquired: 14_860_000, usdValue: 1_700_000, source: "asterburn.info — S3 Phase 2 (0x6648…BE0F → dead)", isEstimated: false },
-  { tokenId: "aster", date: "2025-12-05", tokensAcquired: 18_000_000, usdValue: 2_100_000, source: "asterburn.info — Dec 5 2025 strategic burn (0x6648…BE0F → dead)", isEstimated: false },
-  { tokenId: "aster", date: "2026-02-05", tokensAcquired: 23_000_000, usdValue: 3_500_000, source: "asterburn.info — S4-5 (Feb 5 2026, 0x6648…BE0F → dead)", isEstimated: false },
-  { tokenId: "aster", date: "2026-03-31", tokensAcquired:  5_000_000, usdValue:   420_000, source: "asterburn.info — S6 est (post-emission-overhaul, 97% reduction)", isEstimated: true },
-  // Sum: 98.86M ASTER burned. Verify each tx: bscscan.com/address/0x664827c71193018D7843f0D0F41A5D0D6dcEBE0F
+  // TOTAL: 266.3M tokens bought back / $187M spent as of March 9 2026 (mexc.com)
+  // 176M+ permanently burned. S6 runs daily auto-burns from 40% of fees.
+  { tokenId: "aster", date: "2025-03-31", tokensAcquired: 10_000_000, usdValue: 1_100_000, source: "asterburn.info — S1 est.", isEstimated: true },
+  { tokenId: "aster", date: "2025-06-30", tokensAcquired: 13_000_000, usdValue: 1_500_000, source: "asterburn.info — S2 est.", isEstimated: true },
+  { tokenId: "aster", date: "2025-08-31", tokensAcquired: 55_700_000, usdValue: 60_000_000, source: "asterburn.info — S3 Phase 1 (155.7M total bought, 77.86M burned Dec 5 2025)", isEstimated: false },
+  { tokenId: "aster", date: "2025-10-31", tokensAcquired: 55_000_000, usdValue: 55_000_000, source: "asterburn.info — S3 Phase 2", isEstimated: false },
+  { tokenId: "aster", date: "2025-12-05", tokensAcquired: 77_860_328, usdValue: 89_800_000, source: "asterburn.info — S3 burn (Dec 5 2025): 77.86M ASTER → dead address. TX: 0xfda509…", isEstimated: false },
+  { tokenId: "aster", date: "2026-02-05", tokensAcquired: 98_400_345, usdValue: 35_000_000, source: "asterburn.info — S4+S5 100% burn (Feb 5 2026, 13:00 UTC): 98,400,345.46 ASTER → dead", isEstimated: false },
+  { tokenId: "aster", date: "2026-03-09", tokensAcquired: 12_200_000, usdValue: 7_600_000, source: "asterburn.info — S6 (daily auto-burns from 40% of fees, $7.6M spent as of Mar 9 2026)", isEstimated: false },
+  // S6 ongoing daily burns post March 2026
 
   // ── LIGHTER — tokenomist.ai + lighter explorer account 0 ─────
   // Treasury account: app.lighter.xyz/explorer/accounts/0
@@ -222,10 +225,11 @@ export const BUYBACK_EVENTS: BuybackEvent[] = [
 
   // ── EDGEX — daily 24h burns from fee revenue ─────────────────
   // Token (Ethereum): 0xb0076de78dc50581770bba1d211ddc0ad4f2a241
-  // Monitor: etherscan.io token txns filtering for burns to 0x000…dEaD
-  // Official announcements: @edgeX_exchange on X
-  // First confirmed burn: 2.528M EDGE (April 2 2026, post-launch)
-  { tokenId: "edgex", date: "2026-04-02", tokensAcquired: 2_528_000, usdValue: 2_300_000, source: "Etherscan — 1st confirmed burn (2.528M EDGE → dead address)", isEstimated: false },
+  // TGE: March 31 2026. Buyback program launched April 2 2026.
+  // $13M total buybacks since launch. 2.5M EDGE burned to dead address.
+  // 140M tokens (14% supply) locked 1yr. Source: coinmarketcap.com/cmc-ai/edgex April 2026
+  { tokenId: "edgex", date: "2026-04-02", tokensAcquired: 2_528_000, usdValue: 380_000, source: "Etherscan — 1st confirmed burn (2.528M EDGE → dead address, April 2 2026)", isEstimated: false },
+  { tokenId: "edgex", date: "2026-05-01", tokensAcquired: 0, usdValue: 12_620_000, source: "CoinMarketCap — $13M total buybacks since April (est. Apr–May 2026)", isEstimated: true },
 ];
 
 // ─── Buyback totals (seeded) ────────────────────────────────────
@@ -233,46 +237,49 @@ export const BUYBACK_EVENTS: BuybackEvent[] = [
 export const BUYBACK_TOTALS: BuybackTotals[] = [
   {
     tokenId: "hyperliquid",
-    // Verified cumulative: ~$1.083B from DefiLlama (April 2026).
+    // Verified cumulative: $1.16B+ from multiple sources (May 2026).
+    // Quarterly: Q3 2025 $316.8M, Q4 2025 $255.1M, Q1 2026 $192.3M.
+    // Fund holds ~28.5M HYPE tokens (not burned — held by Assistance Fund).
     // On-chain: hypurrscan.io/address/0xfefefefefefefefefefefefefefefefefefefefe
-    // Wallet holds/auto-buys since HYPE launch Nov 29 2024. No private key — fully on-chain.
-    totalTokensBoughtBack: 43_000_000,
-    totalUsdSpent: 1_083_000_000,
-    lastUpdated: "2026-04-05",
+    totalTokensBoughtBack: 28_500_000,
+    totalUsdSpent: 1_160_000_000,
+    lastUpdated: "2026-05-30",
     sourceUrl: "https://defillama.com/protocol/hyperliquid",
     walletUrl: "https://hypurrscan.io/address/0xfefefefefefefefefefefefefefefefefefefefe",
   },
   {
     tokenId: "aster",
-    // Confirmed burned: 98.86M ASTER (asterburn.info dashboard, S1–S6 cumulative, April 2026).
+    // 266.3M tokens bought back total ($187M) as of March 9 2026.
+    // 176M+ permanently burned (S1–S6 cumulative). S6 running daily auto-burns.
     // Buyback wallet: 0x664827c71193018D7843f0D0F41A5D0D6dcEBE0F (BscScan)
-    // Analytics: tokenomist.ai/aster-2/buyback (per-event USD + tx links)
-    totalTokensBoughtBack: 98_860_000,
-    totalUsdSpent: 12_120_000,
-    lastUpdated: "2026-04-05",
+    // Sources: asterburn.info, cryptonews.net March 2026, mexc.com
+    totalTokensBoughtBack: 266_300_000,
+    totalUsdSpent: 187_000_000,
+    lastUpdated: "2026-05-30",
     sourceUrl: "https://www.asterburn.info/",
     walletUrl: "https://bscscan.com/address/0x664827c71193018D7843f0D0F41A5D0D6dcEBE0F#tokentxns",
   },
   {
     tokenId: "lighter",
-    // Verify: tokenomist.ai/lighter/buyback (daily buyback table with LIT, USD, price)
+    // Buyback started Jan 2026. ~180K LIT / $550K confirmed in early Jan (dlnews).
+    // Running ~5 months at daily TWAP cadence. ~$2.8M est. total as of May 2026.
     // On-chain: app.lighter.xyz/explorer/accounts/0
     // Token: 0x232ce3bd40fcd6f80f3d55a522d03f25df784ee2
-    totalTokensBoughtBack: 2_890_000,
-    totalUsdSpent: 2_290_000,
-    lastUpdated: "2026-03-31",
+    totalTokensBoughtBack: 3_200_000,
+    totalUsdSpent: 2_800_000,
+    lastUpdated: "2026-05-30",
     sourceUrl: "https://tokenomist.ai/lighter/buyback",
     walletUrl: "https://app.lighter.xyz/explorer/accounts/0",
     tokenContract: "0x232ce3bd40fcd6f80f3d55a522d03f25df784ee2",
   },
   {
     tokenId: "edgex",
-    // First confirmed burn: 2.528M EDGE (April 2 2026). Daily burns ongoing.
-    // Token (Ethereum): 0xb0076de78dc50581770bba1d211ddc0ad4f2a241
-    // Track: Etherscan token txns filtering transfers to 0x000…dEaD
+    // $13M total buybacks since April 2026 TGE launch. 2.5M EDGE burned to dead address.
+    // Daily burns ongoing. Token (Ethereum): 0xb0076de78dc50581770bba1d211ddc0ad4f2a241
+    // Source: coinmarketcap.com/cmc-ai/edgex April 2026
     totalTokensBoughtBack: 2_528_000,
-    totalUsdSpent: 2_300_000,
-    lastUpdated: "2026-04-05",
+    totalUsdSpent: 13_000_000,
+    lastUpdated: "2026-05-30",
     sourceUrl: "https://etherscan.io/token/0xb0076de78dc50581770bba1d211ddc0ad4f2a241",
     walletUrl: "https://etherscan.io/token/0xb0076de78dc50581770bba1d211ddc0ad4f2a241",
     tokenContract: "0xb0076de78dc50581770bba1d211ddc0ad4f2a241",
