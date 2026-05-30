@@ -4,21 +4,21 @@
 //   Hyperliquid : api.hyperliquid.xyz/info — userFillsByTime for 0xfefe…fefe wallet
 //   Lighter     : DefiLlama daily fees × 50% (lighter chain fills endpoint is auth-gated)
 //   Aster       : BscScan tokentx for 0x6648…BE0F wallet → filter burns to 0x000…dEaD
-//   EdgeX       : Etherscan tokentx for 0xb007…a241 contract → burns to 0x000…dEaD
+//   EdgeX       : BaseScan tokentx for EDGE contract on Base → burns to 0x000…dEaD
 //
 // Cache: 1 hour (revalidate = 3600)
 
 import { NextRequest } from "next/server";
 
-export const dynamic = "force-dynamic"; // always fresh on first request then ISR
+export const dynamic = "force-dynamic";
 
 // ─── Types ───────────────────────────────────────────────────────
 
 export interface DailyBuyback {
-  date: string;    // YYYY-MM-DD UTC
-  tokens: number;  // token units acquired / burned
-  usd: number;     // USD value (0 if not available)
-  txCount: number; // on-chain transaction count (0 = aggregated/estimated)
+  date: string;
+  tokens: number;
+  usd: number;
+  txCount: number;
 }
 
 export interface TokenBuybackData {
@@ -26,7 +26,7 @@ export interface TokenBuybackData {
   daily: DailyBuyback[];
   cumulative: { date: string; tokens: number; usd: number }[];
   source: string;
-  isLive: boolean;   // true = actual on-chain tx data
+  isLive: boolean;
   fetchedAt: number;
   error?: string;
 }
@@ -65,19 +65,11 @@ function makeResult(
 }
 
 // ─── Hyperliquid ─────────────────────────────────────────────────
-// Wallet: 0xfefefefefefefefefefefefefefefefefefefefe (HLP Assistance Fund — no private key)
-// All fills from this wallet are HYPE spot market buys (sole purpose of wallet).
+// Wallet: 0xfefefefefefefefefefefefefefefefefefefefe (HLP Assistance Fund)
+// Dec 24 2025: 85% validator vote formally recognised all AF tokens as burned.
 // API: api.hyperliquid.xyz/info → userFillsByTime (public, no auth required)
-// Fields: time (ms), coin, px (USDC/HYPE), sz (HYPE amount), side ("B"=buy/"A"=ask)
-// USD value = sz × px
-//
-// Pagination: API returns up to ~2000 fills per call. For 90d we need multiple pages.
-// Strategy: paginate backward using earliest fill timestamp as next window's endTime.
 
-// HL API returns up to ~2000 fills per call, covering ~4-5 days of activity.
-// For longer windows we use PARALLEL windowed fetches to avoid server-side timeouts.
-// Each 5-day window is fetched concurrently; results are deduplicated by tid.
-const HL_WINDOW_MS = 5 * 86_400_000; // 5-day slices (comfortably within 2000-fill limit)
+const HL_WINDOW_MS = 5 * 86_400_000;
 
 interface HLFill {
   coin: string;
@@ -104,7 +96,7 @@ async function fetchHLWindow(startTime: number): Promise<HLFill[]> {
     const data = await res.json();
     return Array.isArray(data) ? (data as HLFill[]) : [];
   } catch {
-    return []; // window failure is non-fatal; other windows still contribute
+    return [];
   }
 }
 
@@ -113,17 +105,18 @@ async function fetchHyperliquid(days: number): Promise<TokenBuybackData> {
   const rangeStart = fetchedAt - days * 86_400_000;
 
   try {
-    // Build window start times: one per HL_WINDOW_MS interval
     const windowStarts: number[] = [];
     for (let t = rangeStart; t < fetchedAt; t += HL_WINDOW_MS) {
       windowStarts.push(t);
     }
+    // Ensure we always include a window that reaches "now"
+    if (windowStarts.length === 0 || windowStarts[windowStarts.length - 1] + HL_WINDOW_MS < fetchedAt) {
+      windowStarts.push(fetchedAt - HL_WINDOW_MS);
+    }
 
-    // Fetch all windows in parallel (each independent, each ~1s)
     const pages = await Promise.all(windowStarts.map(fetchHLWindow));
     const pageCount = pages.length;
 
-    // Flatten + deduplicate by tid (windows may overlap by a fill or two)
     const seen = new Set<number>();
     const allFills: HLFill[] = [];
     for (const page of pages) {
@@ -135,7 +128,6 @@ async function fetchHyperliquid(days: number): Promise<TokenBuybackData> {
       }
     }
 
-    // The Assistance Fund wallet ONLY buys HYPE. Filter buy-side fills.
     const buys = allFills.filter(
       (f) => (f.side === "B" || f.dir === "Buy") && f.time >= rangeStart,
     );
@@ -168,9 +160,7 @@ async function fetchHyperliquid(days: number): Promise<TokenBuybackData> {
 }
 
 // ─── Lighter ─────────────────────────────────────────────────────
-// The Lighter chain fills endpoint (mainnet.zklighter.elliot.ai/api/v1/market-buybacks/daily)
-// requires authentication. Public alternative: DefiLlama daily fees × buyback rate.
-// Source: api.llama.fi/summary/fees/lighter-perps?dataType=dailyFees
+// DefiLlama daily fees × 50% buyback rate estimate.
 
 async function fetchLighter(days: number): Promise<TokenBuybackData> {
   const fetchedAt = Date.now();
@@ -189,7 +179,7 @@ async function fetchLighter(days: number): Promise<TokenBuybackData> {
       .filter(([ts]) => ts >= cutoffUnix)
       .map(([ts, fees]) => ({
         date: toDateStr(ts * 1000),
-        tokens: 0, // token count not inferrable without daily price history
+        tokens: 0,
         usd: parseFloat((fees * BUYBACK_RATE).toFixed(2)),
         txCount: 0,
       }));
@@ -209,13 +199,12 @@ async function fetchLighter(days: number): Promise<TokenBuybackData> {
 // ─── Aster ───────────────────────────────────────────────────────
 // Buyback wallet: 0x664827c71193018D7843f0D0F41A5D0D6dcEBE0F (BSC)
 // Burns to: 0x000000000000000000000000000000000000dEaD
-// Source: BscScan API — token transfer events
-// Falls back to DefiLlama × 60% if BscScan is unavailable
+// BscScan API — no API key required for basic queries (5 req/s rate limit)
 
 const ASTER_BUYBACK_WALLET = "0x664827c71193018D7843f0D0F41A5D0D6dcEBE0F";
 const DEAD_ADDRESS = "0x000000000000000000000000000000000000dead";
 
-interface BscTx {
+interface BlockscanTx {
   blockNumber: string;
   timeStamp: string;
   hash: string;
@@ -231,23 +220,21 @@ async function fetchAster(days: number): Promise<TokenBuybackData> {
   const fetchedAt = Date.now();
   const cutoffUnix = Math.floor((fetchedAt - days * 86_400_000) / 1000);
 
-  // Try BscScan (public, no key needed for basic queries — rate limited to 5 req/s)
+  // BscScan — no API key needed for basic free-tier queries
   try {
     const url =
       `https://api.bscscan.com/api?module=account&action=tokentx` +
-      `&address=${ASTER_BUYBACK_WALLET}&sort=asc&apikey=YourApiKeyToken`;
-    const res = await fetch(url);
+      `&address=${ASTER_BUYBACK_WALLET}&sort=asc`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
     if (data.status === "1" && Array.isArray(data.result)) {
-      const burns: BscTx[] = (data.result as BscTx[]).filter((tx) => {
-        return (
-          parseInt(tx.timeStamp) >= cutoffUnix &&
-          tx.to.toLowerCase() === DEAD_ADDRESS &&
-          tx.tokenSymbol === "ASTER"
-        );
-      });
+      const burns = (data.result as BlockscanTx[]).filter((tx) =>
+        parseInt(tx.timeStamp) >= cutoffUnix &&
+        tx.to.toLowerCase() === DEAD_ADDRESS &&
+        tx.tokenSymbol === "ASTER"
+      );
 
       if (burns.length > 0) {
         const byDay = new Map<string, DailyBuyback>();
@@ -256,49 +243,39 @@ async function fetchAster(days: number): Promise<TokenBuybackData> {
           const decimals = parseInt(tx.tokenDecimal || "18");
           const tokens = parseFloat(tx.value) / Math.pow(10, decimals);
           const cur = byDay.get(date) ?? { date, tokens: 0, usd: 0, txCount: 0 };
-          byDay.set(date, {
-            date,
-            tokens: cur.tokens + tokens,
-            usd: 0, // BscScan doesn't supply USD — would need historical price feed
-            txCount: cur.txCount + 1,
-          });
+          byDay.set(date, { date, tokens: cur.tokens + tokens, usd: 0, txCount: cur.txCount + 1 });
         }
-
         return makeResult(
           "aster",
           Array.from(byDay.values()),
-          `BscScan — ASTER burns to dead address from ${ASTER_BUYBACK_WALLET}`,
+          `BscScan — ASTER burns to dead address from ${ASTER_BUYBACK_WALLET} (${burns.length} txs)`,
           true,
           fetchedAt,
         );
       }
-
-      // BscScan returned OK but no burns in range — fall through to DefiLlama
       throw new Error("No ASTER burns found in date range from BscScan");
     }
-
     throw new Error(`BscScan status ${data.status}: ${data.message}`);
   } catch (bscError) {
     // Fallback: DefiLlama daily fees × 60%
     try {
       const res = await fetch(
         "https://api.llama.fi/summary/fees/aster-perps?dataType=dailyFees",
+        { signal: AbortSignal.timeout(8000) },
       );
       if (!res.ok) throw new Error(`DefiLlama HTTP ${res.status}`);
       const data = await res.json();
-
       const chart: [number, number][] = data.totalDataChart ?? [];
+      const cutoffUnix2 = Math.floor((fetchedAt - days * 86_400_000) / 1000);
       const BUYBACK_RATE = 0.60;
-
       const daily: DailyBuyback[] = chart
-        .filter(([ts]) => ts >= Math.floor(cutoffUnix))
+        .filter(([ts]) => ts >= cutoffUnix2)
         .map(([ts, fees]) => ({
           date: toDateStr(ts * 1000),
           tokens: 0,
           usd: parseFloat((fees * BUYBACK_RATE).toFixed(2)),
           txCount: 0,
         }));
-
       return makeResult(
         "aster",
         daily,
@@ -313,14 +290,13 @@ async function fetchAster(days: number): Promise<TokenBuybackData> {
 }
 
 // ─── EdgeX ───────────────────────────────────────────────────────
-// EDGE token contract (Ethereum): 0xb0076de78dc50581770bba1d211ddc0ad4f2a241
-// Burns tracked as token transfers to 0x000…dEaD
-// Token launched March 31 2026 — very early days, few burns exist.
-// Source: Etherscan API (free tier). Fallback: seed data (first confirmed burn).
+// EDGE token on Base network: 0xB0076DE78Dc50581770BBa1D211dDc0aD4F2a241
+// Burns tracked as token transfers to 0x000…dEaD on Base
+// Source: BaseScan API (no key required for basic queries)
+// Fallback: DefiLlama edgex-perps fees × 40%
 
-const EDGE_TOKEN_CONTRACT = "0xb0076de78dc50581770bba1d211ddc0ad4f2a241";
+const EDGE_TOKEN_CONTRACT = "0xB0076DE78Dc50581770BBa1D211dDc0aD4F2a241";
 
-// Confirmed seed events for EdgeX (pre-loaded while Etherscan API stabilises)
 const EDGEX_SEED: DailyBuyback[] = [
   { date: "2026-04-02", tokens: 2_528_370, usd: 380_000, txCount: 1 },
 ];
@@ -329,66 +305,86 @@ async function fetchEdgeX(days: number): Promise<TokenBuybackData> {
   const fetchedAt = Date.now();
   const cutoffUnix = Math.floor((fetchedAt - days * 86_400_000) / 1000);
 
-  // Try Etherscan — query all token transfers for the EDGE contract then filter burns
+  // BaseScan API — Base network, no API key needed for basic queries
   try {
     const url =
-      `https://api.etherscan.io/api?module=account&action=tokentx` +
-      `&contractaddress=${EDGE_TOKEN_CONTRACT}` +
-      `&sort=asc&apikey=YourApiKeyToken`;
-    const res = await fetch(url);
+      `https://api.basescan.org/api?module=account&action=tokentx` +
+      `&contractaddress=${EDGE_TOKEN_CONTRACT}&sort=asc`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
     if (data.status === "1" && Array.isArray(data.result) && data.result.length > 0) {
-      const burns: BscTx[] = (data.result as BscTx[]).filter((tx) => {
-        return (
-          parseInt(tx.timeStamp) >= cutoffUnix &&
-          tx.to.toLowerCase() === DEAD_ADDRESS
-        );
-      });
+      const burns = (data.result as BlockscanTx[]).filter((tx) =>
+        parseInt(tx.timeStamp) >= cutoffUnix &&
+        tx.to.toLowerCase() === DEAD_ADDRESS
+      );
 
-      const byDay = new Map<string, DailyBuyback>();
-      for (const tx of burns) {
-        const date = toDateStr(parseInt(tx.timeStamp) * 1000);
-        const decimals = parseInt(tx.tokenDecimal || "18");
-        const tokens = parseFloat(tx.value) / Math.pow(10, decimals);
-        const cur = byDay.get(date) ?? { date, tokens: 0, usd: 0, txCount: 0 };
-        byDay.set(date, {
-          date,
-          tokens: cur.tokens + tokens,
-          usd: 0, // Etherscan doesn't supply historical USD price
-          txCount: cur.txCount + 1,
-        });
-      }
-
-      if (byDay.size > 0) {
+      if (burns.length > 0) {
+        const byDay = new Map<string, DailyBuyback>();
+        for (const tx of burns) {
+          const date = toDateStr(parseInt(tx.timeStamp) * 1000);
+          const decimals = parseInt(tx.tokenDecimal || "18");
+          const tokens = parseFloat(tx.value) / Math.pow(10, decimals);
+          const cur = byDay.get(date) ?? { date, tokens: 0, usd: 0, txCount: 0 };
+          byDay.set(date, { date, tokens: cur.tokens + tokens, usd: 0, txCount: cur.txCount + 1 });
+        }
         return makeResult(
           "edgex",
           Array.from(byDay.values()),
-          `Etherscan — EDGE burns to 0x000…dEaD (contract: ${EDGE_TOKEN_CONTRACT})`,
+          `BaseScan — EDGE burns to 0x000…dEaD on Base (contract: ${EDGE_TOKEN_CONTRACT}, ${burns.length} txs)`,
           true,
           fetchedAt,
         );
       }
+      throw new Error("No EDGE burns found in range from BaseScan");
     }
-    // Etherscan returned OK but no burns — fall through to seed
-  } catch {
-    // Etherscan unavailable — fall through to seed
+    throw new Error(`BaseScan status ${data.status}: ${data.message ?? "no result"}`);
+  } catch (basescanError) {
+    // Fallback: DefiLlama edgex-perps fees × 40%
+    try {
+      const res = await fetch(
+        "https://api.llama.fi/summary/fees/edgex-perps?dataType=dailyFees",
+        { signal: AbortSignal.timeout(8000) },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const chart: [number, number][] = data.totalDataChart ?? [];
+      const cutoffUnix2 = Math.floor((fetchedAt - days * 86_400_000) / 1000);
+      const BUYBACK_RATE = 0.40;
+      const daily: DailyBuyback[] = chart
+        .filter(([ts]) => ts >= cutoffUnix2)
+        .map(([ts, fees]) => ({
+          date: toDateStr(ts * 1000),
+          tokens: 0,
+          usd: parseFloat((fees * BUYBACK_RATE).toFixed(2)),
+          txCount: 0,
+        }));
+
+      if (daily.length > 0) {
+        return makeResult(
+          "edgex",
+          daily,
+          `DefiLlama edgex-perps dailyFees × 40% (BaseScan unavailable: ${basescanError})`,
+          false,
+          fetchedAt,
+        );
+      }
+      throw new Error("DefiLlama returned empty chart");
+    } catch (dlError) {
+      // Final fallback: seed data
+      const seedInRange = EDGEX_SEED.filter((d) =>
+        Math.floor(new Date(d.date).getTime() / 1000) >= cutoffUnix
+      );
+      return makeResult(
+        "edgex",
+        seedInRange,
+        `Seed data — first confirmed burn 2.528M EDGE (April 2 2026). BaseScan: ${basescanError}. DefiLlama: ${dlError}`,
+        false,
+        fetchedAt,
+      );
+    }
   }
-
-  // Fallback: use confirmed seed events (first burn confirmed April 2 2026)
-  const seedInRange = EDGEX_SEED.filter((d) => {
-    const ts = Math.floor(new Date(d.date).getTime() / 1000);
-    return ts >= cutoffUnix;
-  });
-
-  return makeResult(
-    "edgex",
-    seedInRange,
-    `Seed data — first confirmed burn 2.528M EDGE (April 2 2026). Program active; Etherscan API returned no results.`,
-    false,
-    fetchedAt,
-  );
 }
 
 // ─── Route handler ───────────────────────────────────────────────
