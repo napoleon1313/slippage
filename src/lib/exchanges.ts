@@ -34,7 +34,7 @@ export const EXCHANGES: ExchangeConfig[] = [
     name: "Aster",
     type: "dex",
     color: "#e879f9",
-    takerFeeBps: 3.5, // Standard taker fee
+    takerFeeBps: 4.0, // Standard USDT perp taker fee — confirmed 4 bps (Messari/Aster docs, March 2026)
     symbols: {
       BTC: "BTCUSDT",
       ETH: "ETHUSDT",
