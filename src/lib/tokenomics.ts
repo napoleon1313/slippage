@@ -128,7 +128,7 @@ export const TOKEN_CONFIGS: TokenConfig[] = [
     totalSupply: 1_000_000_000,
     circulatingSupply: 350_000_000,
     buybackRatePct: 0.40,
-    feeStructureNote: "Daily 24h burns to dead address from fee revenue. $13M+ total buybacks since April 2026 launch; 2.5M EDGE burned. 140M tokens (14% supply) locked 1yr post-TGE.",
+    feeStructureNote: "Daily 24h burns to dead address from fee revenue. $13M+ total buybacks since April 2026 TGE. First burn: 2,528,370 EDGE (~$380K, Apr 2 2026). DefiLlama tracks buyback USD as 'Holders Revenue'.",
     dataQuality: "partial",
     buybackWallet: "0xb0076de78dc50581770bba1d211ddc0ad4f2a241",
     explorerUrl: "https://etherscan.io/token/0xb0076de78dc50581770bba1d211ddc0ad4f2a241",

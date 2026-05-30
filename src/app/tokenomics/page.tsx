@@ -609,7 +609,7 @@ export default function TokenomicsPage() {
               Live On-Chain Buybacks
             </h2>
             <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "4px" }}>
-              Daily buyback activity pulled directly from on-chain sources. HYPE: HL API (public fills). Aster: BscScan burns (DefiLlama fallback). EdgeX: BaseScan burns on Base network (DefiLlama fallback). Lighter: DefiLlama fees proxy.
+              Daily buyback activity pulled directly from on-chain sources. HYPE: HL API (public fills). Aster: BscScan burns (DefiLlama fallback). EdgeX: DefiLlama holdersRevenue (edgeX own API fallback). Lighter: DefiLlama fees proxy.
             </p>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px", alignItems: "flex-end" }}>

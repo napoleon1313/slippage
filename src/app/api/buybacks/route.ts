@@ -290,12 +290,13 @@ async function fetchAster(days: number): Promise<TokenBuybackData> {
 }
 
 // ─── EdgeX ───────────────────────────────────────────────────────
-// EDGE token on Base network: 0xB0076DE78Dc50581770BBa1D211dDc0aD4F2a241
-// Burns tracked as token transfers to 0x000…dEaD on Base
-// Source: BaseScan API (no key required for basic queries)
-// Fallback: DefiLlama edgex-perps fees × 40%
-
-const EDGE_TOKEN_CONTRACT = "0xB0076DE78Dc50581770BBa1D211dDc0aD4F2a241";
+// Primary: DefiLlama "holdersRevenue" for edgex — explicitly tracks EDGE buybacks.
+//   api.llama.fi/summary/fees/edgex?dataType=dailyRevenue → holdersRevenue field
+// Secondary: edgeX own public API (api.prod.edgex.exchange)
+// Final fallback: seed data (confirmed first burn April 2 2026)
+//
+// EDGE token: 0xB0076DE78Dc50581770BBa1D211dDc0aD4F2a241 (Ethereum mainnet)
+// edgeX chain is Arbitrum Orbit; burns happen on-chain via their own contracts.
 
 const EDGEX_SEED: DailyBuyback[] = [
   { date: "2026-04-02", tokens: 2_528_370, usd: 380_000, txCount: 1 },
@@ -305,81 +306,87 @@ async function fetchEdgeX(days: number): Promise<TokenBuybackData> {
   const fetchedAt = Date.now();
   const cutoffUnix = Math.floor((fetchedAt - days * 86_400_000) / 1000);
 
-  // BaseScan API — Base network, no API key needed for basic queries
+  // Primary: DefiLlama holdersRevenue — explicitly = EDGE buyback USD value
   try {
-    const url =
-      `https://api.basescan.org/api?module=account&action=tokentx` +
-      `&contractaddress=${EDGE_TOKEN_CONTRACT}&sort=asc`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const res = await fetch(
+      "https://api.llama.fi/summary/fees/edgex?dataType=dailyRevenue",
+      { signal: AbortSignal.timeout(8000) },
+    );
+    if (!res.ok) throw new Error(`DefiLlama HTTP ${res.status}`);
     const data = await res.json();
 
-    if (data.status === "1" && Array.isArray(data.result) && data.result.length > 0) {
-      const burns = (data.result as BlockscanTx[]).filter((tx) =>
-        parseInt(tx.timeStamp) >= cutoffUnix &&
-        tx.to.toLowerCase() === DEAD_ADDRESS
-      );
+    // holdersRevenue is the buyback-allocated portion; totalDataChart is total revenue
+    // Try holdersRevenueChart first, fall back to totalDataChart × buyback rate
+    const holdersChart: [number, number][] = data.holdersRevenueChart ?? data.totalDataChart ?? [];
 
-      if (burns.length > 0) {
-        const byDay = new Map<string, DailyBuyback>();
-        for (const tx of burns) {
-          const date = toDateStr(parseInt(tx.timeStamp) * 1000);
-          const decimals = parseInt(tx.tokenDecimal || "18");
-          const tokens = parseFloat(tx.value) / Math.pow(10, decimals);
-          const cur = byDay.get(date) ?? { date, tokens: 0, usd: 0, txCount: 0 };
-          byDay.set(date, { date, tokens: cur.tokens + tokens, usd: 0, txCount: cur.txCount + 1 });
-        }
-        return makeResult(
-          "edgex",
-          Array.from(byDay.values()),
-          `BaseScan — EDGE burns to 0x000…dEaD on Base (contract: ${EDGE_TOKEN_CONTRACT}, ${burns.length} txs)`,
-          true,
-          fetchedAt,
-        );
-      }
-      throw new Error("No EDGE burns found in range from BaseScan");
-    }
-    throw new Error(`BaseScan status ${data.status}: ${data.message ?? "no result"}`);
-  } catch (basescanError) {
-    // Fallback: DefiLlama edgex-perps fees × 40%
-    try {
-      const res = await fetch(
-        "https://api.llama.fi/summary/fees/edgex-perps?dataType=dailyFees",
-        { signal: AbortSignal.timeout(8000) },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const chart: [number, number][] = data.totalDataChart ?? [];
-      const cutoffUnix2 = Math.floor((fetchedAt - days * 86_400_000) / 1000);
-      const BUYBACK_RATE = 0.40;
-      const daily: DailyBuyback[] = chart
-        .filter(([ts]) => ts >= cutoffUnix2)
-        .map(([ts, fees]) => ({
+    if (holdersChart.length > 0) {
+      const daily: DailyBuyback[] = holdersChart
+        .filter(([ts]) => ts >= cutoffUnix)
+        .map(([ts, usd]) => ({
           date: toDateStr(ts * 1000),
           tokens: 0,
-          usd: parseFloat((fees * BUYBACK_RATE).toFixed(2)),
+          usd: parseFloat(usd.toFixed(2)),
           txCount: 0,
-        }));
+        }))
+        .filter(d => d.usd > 0);
 
       if (daily.length > 0) {
         return makeResult(
           "edgex",
           daily,
-          `DefiLlama edgex-perps dailyFees × 40% (BaseScan unavailable: ${basescanError})`,
-          false,
+          "DefiLlama api.llama.fi/summary/fees/edgex — holdersRevenue (EDGE buyback, live)",
+          true,
           fetchedAt,
         );
       }
-      throw new Error("DefiLlama returned empty chart");
-    } catch (dlError) {
+    }
+    throw new Error("DefiLlama returned empty holdersRevenue chart");
+  } catch (primaryError) {
+    // Secondary: edgeX own public API
+    try {
+      const res = await fetch(
+        "https://api.prod.edgex.exchange/api/v1/public/token/buyback/page",
+        { signal: AbortSignal.timeout(8000) },
+      );
+      if (!res.ok) throw new Error(`edgeX API HTTP ${res.status}`);
+      const data = await res.json();
+
+      // edgeX returns a list of buyback events with date, usd, tokenAmount fields
+      const items: Array<{ date?: string; createdTime?: number; usdValue?: number; tokenAmount?: number }> =
+        data?.data?.dataList ?? data?.data ?? data?.list ?? [];
+
+      if (items.length > 0) {
+        const byDay = new Map<string, DailyBuyback>();
+        for (const item of items) {
+          const ts = item.createdTime ?? (item.date ? new Date(item.date).getTime() : null);
+          if (!ts) continue;
+          if (Math.floor(ts / 1000) < cutoffUnix) continue;
+          const date = toDateStr(ts > 1e12 ? ts : ts * 1000);
+          const usd = item.usdValue ?? 0;
+          const tokens = item.tokenAmount ?? 0;
+          const cur = byDay.get(date) ?? { date, tokens: 0, usd: 0, txCount: 0 };
+          byDay.set(date, { date, tokens: cur.tokens + tokens, usd: cur.usd + usd, txCount: cur.txCount + 1 });
+        }
+        if (byDay.size > 0) {
+          return makeResult(
+            "edgex",
+            Array.from(byDay.values()),
+            `api.prod.edgex.exchange — buyback page (${items.length} events)`,
+            true,
+            fetchedAt,
+          );
+        }
+      }
+      throw new Error("edgeX API returned no buyback items");
+    } catch (apiError) {
       // Final fallback: seed data
-      const seedInRange = EDGEX_SEED.filter((d) =>
+      const seedInRange = EDGEX_SEED.filter(d =>
         Math.floor(new Date(d.date).getTime() / 1000) >= cutoffUnix
       );
       return makeResult(
         "edgex",
         seedInRange,
-        `Seed data — first confirmed burn 2.528M EDGE (April 2 2026). BaseScan: ${basescanError}. DefiLlama: ${dlError}`,
+        `Seed: first confirmed burn 2.528M EDGE (Apr 2 2026). DefiLlama: ${primaryError}. Own API: ${apiError}`,
         false,
         fetchedAt,
       );
