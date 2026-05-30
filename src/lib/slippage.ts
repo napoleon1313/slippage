@@ -14,6 +14,14 @@ export interface OrderBook {
   asset: string;
 }
 
+export interface FillLevel {
+  price: number;
+  size: number;       // base units available at this level
+  fillSize: number;   // base units consumed from this level
+  fillNotional: number; // USD consumed from this level
+  cumNotional: number;  // cumulative USD filled through this level
+}
+
 export interface SlippageResult {
   midPrice: number;
   avgFillPrice: number;
@@ -24,6 +32,8 @@ export interface SlippageResult {
   side: "buy" | "sell";
   filledNotional: number; // how much was actually fillable
   fullyFilled: boolean;
+  fillLevels: FillLevel[]; // orderbook levels consumed (audit trail)
+  levelsConsumed: number;  // how many price levels were touched
 }
 
 /**
@@ -51,6 +61,7 @@ export function calculateSlippage(
   let remainingNotional = notionalUsd;
   let totalBaseUnits = 0;
   let totalCost = 0;
+  const fillLevels: FillLevel[] = [];
 
   for (const level of levels) {
     if (remainingNotional <= 0) break;
@@ -62,6 +73,14 @@ export function calculateSlippage(
     totalBaseUnits += fillBase;
     totalCost += fillNotional;
     remainingNotional -= fillNotional;
+
+    fillLevels.push({
+      price: level.price,
+      size: level.size,
+      fillSize: fillBase,
+      fillNotional,
+      cumNotional: totalCost,
+    });
   }
 
   if (totalBaseUnits === 0) return null;
@@ -91,6 +110,8 @@ export function calculateSlippage(
     side,
     filledNotional,
     fullyFilled,
+    fillLevels,
+    levelsConsumed: fillLevels.length,
   };
 }
 
@@ -122,5 +143,7 @@ export function calculateAvgSlippage(
     filledNotional:
       (buyResult.filledNotional + sellResult.filledNotional) / 2,
     fullyFilled: buyResult.fullyFilled && sellResult.fullyFilled,
+    fillLevels: buyResult.fillLevels, // use buy side as reference for avg
+    levelsConsumed: Math.round((buyResult.levelsConsumed + sellResult.levelsConsumed) / 2),
   };
 }

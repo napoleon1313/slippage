@@ -162,6 +162,13 @@ export default function Dashboard() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [expandedSnaps, setExpandedSnaps] = useState<Set<string>>(new Set());
   const [showLiveDepth, setShowLiveDepth] = useState(false);
+  const [tooltip, setTooltip] = useState<{
+    x: number; y: number;
+    result: import("@/lib/slippage").SlippageResult;
+    exchange: string;
+    asset: string;
+    notional: number;
+  } | null>(null);
   const [enabledExchanges, setEnabledExchanges] = useState<string[]>(
     EXCHANGES.map((e) => e.id)
   );
@@ -256,68 +263,31 @@ export default function Dashboard() {
 
         if (!symbol) continue; // Not available on this exchange
 
-        // Binance is fetched directly from the browser to bypass Vercel IP blocks
-        // (Binance blocks AWS/Vercel server IPs but supports CORS for browser requests)
-        const isBinanceDirect = exchange.id === "binance";
+        // All other exchanges go through the Next.js API route (server-side)
+        const isCustom = asset.isCustom;
+        const url = isCustom
+          ? `/api/orderbook?exchange=${exchange.id}&asset=${asset.id}&symbol=${encodeURIComponent(symbol)}`
+          : `/api/orderbook?exchange=${exchange.id}&asset=${asset.id}`;
 
-        let p: Promise<void>;
-
-        if (isBinanceDirect) {
-          const binanceSymbol = symbol;
-          p = fetch(
-            `https://fapi.binance.com/fapi/v1/depth?symbol=${binanceSymbol}&limit=1000`
-          )
-            .then((res) => res.json())
-            .then((data) => {
-              if (data.code && data.msg) {
-                newErrors[`${exchange.id}-${asset.id}`] = `Binance: ${data.msg}`;
-                return;
-              }
-              if (!newBooks[exchange.id]) newBooks[exchange.id] = {};
-              newBooks[exchange.id][asset.id] = {
-                bids: (data.bids || []).map(([p, s]: [string, string]) => ({
-                  price: parseFloat(p),
-                  size: parseFloat(s),
-                })),
-                asks: (data.asks || []).map(([p, s]: [string, string]) => ({
-                  price: parseFloat(p),
-                  size: parseFloat(s),
-                })),
-                timestamp: Date.now(),
-                exchange: exchange.id,
-                asset: asset.id,
-              };
-            })
-            .catch((err) => {
-              newErrors[`${exchange.id}-${asset.id}`] = String(err);
-            });
-        } else {
-          // All other exchanges go through the Next.js API route (server-side)
-          const isCustom = asset.isCustom;
-          const url = isCustom
-            ? `/api/orderbook?exchange=${exchange.id}&asset=${asset.id}&symbol=${encodeURIComponent(symbol)}`
-            : `/api/orderbook?exchange=${exchange.id}&asset=${asset.id}`;
-
-          p = fetch(url)
-            .then((res) => res.json())
-            .then((data) => {
-              if (data.error && (!data.bids || data.bids.length === 0)) {
-                newErrors[`${exchange.id}-${asset.id}`] = data.error;
-                return;
-              }
-              if (!newBooks[exchange.id]) newBooks[exchange.id] = {};
-              newBooks[exchange.id][asset.id] = {
-                bids: data.bids || [],
-                asks: data.asks || [],
-                timestamp: data.timestamp,
-                exchange: exchange.id,
-                asset: asset.id,
-              };
-            })
-            .catch((err) => {
-              newErrors[`${exchange.id}-${asset.id}`] = String(err);
-            });
-        }
+        const p: Promise<void> = fetch(url)
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.error && (!data.bids || data.bids.length === 0)) {
+              newErrors[`${exchange.id}-${asset.id}`] = data.error;
+              return;
+            }
+            if (!newBooks[exchange.id]) newBooks[exchange.id] = {};
+            newBooks[exchange.id][asset.id] = {
+              bids: data.bids || [],
+              asks: data.asks || [],
+              timestamp: data.timestamp,
+              exchange: exchange.id,
+              asset: asset.id,
+            };
+          })
+          .catch((err) => {
+            newErrors[`${exchange.id}-${asset.id}`] = String(err);
+          });
 
         fetchPromises.push(p);
       }
@@ -493,12 +463,81 @@ export default function Dashboard() {
   const cexExchanges = activeExchanges.filter((e) => e.type === "cex");
 
   return (
-    <div className="min-h-screen p-6" style={{ background: "var(--bg-primary)" }}>
+    <div className="min-h-screen p-6" style={{ background: "var(--bg-primary)" }}
+      onClick={() => setTooltip(null)}
+    >
+      {/* Hover tooltip for orderbook audit */}
+      {tooltip && (
+        <div
+          className="fixed z-50 rounded-lg shadow-xl text-xs"
+          style={{
+            left: Math.min(tooltip.x + 12, window.innerWidth - 320),
+            top: Math.min(tooltip.y + 12, window.innerHeight - 400),
+            width: 300,
+            background: "var(--bg-card)",
+            border: "1px solid var(--border)",
+            pointerEvents: "none",
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-2 font-bold text-sm" style={{ borderBottom: "1px solid var(--border)" }}>
+            {tooltip.exchange} · {tooltip.asset} · ${(tooltip.notional / 1000).toFixed(0)}K fill
+          </div>
+          <div className="px-3 py-2 space-y-1" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div className="flex justify-between">
+              <span style={{ color: "var(--text-secondary)" }}>Mid price</span>
+              <span className="font-mono">${tooltip.result.midPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
+            </div>
+            <div className="flex justify-between">
+              <span style={{ color: "var(--text-secondary)" }}>Avg fill price</span>
+              <span className="font-mono">${tooltip.result.avgFillPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
+            </div>
+            <div className="flex justify-between">
+              <span style={{ color: "var(--text-secondary)" }}>Slippage</span>
+              <span className="font-mono">{tooltip.result.slippageBps.toFixed(2)} bps</span>
+            </div>
+            <div className="flex justify-between">
+              <span style={{ color: "var(--text-secondary)" }}>Filled notional</span>
+              <span className="font-mono">${tooltip.result.filledNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+            </div>
+            <div className="flex justify-between">
+              <span style={{ color: "var(--text-secondary)" }}>Levels consumed</span>
+              <span className="font-mono">{tooltip.result.levelsConsumed}</span>
+            </div>
+            <div className="flex justify-between">
+              <span style={{ color: "var(--text-secondary)" }}>Fully filled</span>
+              <span className="font-mono" style={{ color: tooltip.result.fullyFilled ? "var(--accent-green)" : "#f87171" }}>
+                {tooltip.result.fullyFilled ? "Yes" : "No — partial fill"}
+              </span>
+            </div>
+          </div>
+          {tooltip.result.fillLevels.length > 0 && (
+            <div className="px-3 py-2">
+              <div className="font-semibold mb-1.5" style={{ color: "var(--text-secondary)" }}>
+                Orderbook levels consumed ({tooltip.result.side === "buy" ? "asks" : "bids"})
+              </div>
+              <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                <div className="flex justify-between text-[10px] uppercase tracking-wider mb-1" style={{ color: "var(--text-secondary)" }}>
+                  <span>Price</span>
+                  <span>Size avail.</span>
+                  <span>Fill $</span>
+                  <span>Cum. $</span>
+                </div>
+                {tooltip.result.fillLevels.map((l, i) => (
+                  <div key={i} className="flex justify-between font-mono text-[11px]">
+                    <span>{l.price.toLocaleString(undefined, { maximumFractionDigits: 3 })}</span>
+                    <span style={{ color: "var(--text-secondary)" }}>{l.size.toFixed(4)}</span>
+                    <span>${(l.fillNotional / 1000).toFixed(1)}K</span>
+                    <span style={{ color: "var(--accent-blue, #60a5fa)" }}>${(l.cumNotional / 1000).toFixed(1)}K</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {/* Header */}
       <div className="mb-6">
-        <p className="text-xs uppercase tracking-widest mb-1" style={{ color: "var(--text-secondary)" }}>
-          Crypto CoE — Execution Cost Research
-        </p>
         <h1 className="text-2xl font-bold">Perp Exchange Slippage Dashboard</h1>
         <p className="text-sm mt-1" style={{ color: "var(--text-secondary)" }}>
           Live order book slippage comparison across perpetual exchanges. Data
@@ -779,6 +818,7 @@ export default function Dashboard() {
                                 const val = getCellValue(ex.id, asset.id, notional);
                                 const isBest = ex.id === bestEx && val !== "--";
                                 const hasError = errors[`${ex.id}-${asset.id}`];
+                                const result = results[ex.id]?.[asset.id]?.[notional]?.[side];
                                 return (
                                   <div
                                     key={ex.id}
@@ -794,8 +834,15 @@ export default function Dashboard() {
                                       className="font-mono"
                                       style={{
                                         color: val === "--" ? "var(--text-secondary)" : "var(--text-primary)",
+                                        cursor: result ? "help" : "default",
+                                        borderBottom: result ? "1px dashed var(--border)" : "none",
                                       }}
                                       title={hasError || undefined}
+                                      onMouseEnter={result ? (e) => {
+                                        const rect = (e.target as HTMLElement).getBoundingClientRect();
+                                        setTooltip({ x: rect.left, y: rect.top, result, exchange: ex.name, asset: asset.displayName, notional });
+                                      } : undefined}
+                                      onMouseLeave={() => setTooltip(null)}
                                     >
                                       {val === "--" ? "--" : `${val} bps`}
                                     </span>
@@ -821,6 +868,7 @@ export default function Dashboard() {
                                 const val = getCellValue(ex.id, asset.id, notional);
                                 const isBest = ex.id === bestEx && val !== "--";
                                 const hasError = errors[`${ex.id}-${asset.id}`];
+                                const result = results[ex.id]?.[asset.id]?.[notional]?.[side];
                                 return (
                                   <div
                                     key={ex.id}
@@ -836,8 +884,15 @@ export default function Dashboard() {
                                       className="font-mono"
                                       style={{
                                         color: val === "--" ? "var(--text-secondary)" : "var(--text-primary)",
+                                        cursor: result ? "help" : "default",
+                                        borderBottom: result ? "1px dashed var(--border)" : "none",
                                       }}
                                       title={hasError || undefined}
+                                      onMouseEnter={result ? (e) => {
+                                        const rect = (e.target as HTMLElement).getBoundingClientRect();
+                                        setTooltip({ x: rect.left, y: rect.top, result, exchange: ex.name, asset: asset.displayName, notional });
+                                      } : undefined}
+                                      onMouseLeave={() => setTooltip(null)}
                                     >
                                       {val === "--" ? "--" : `${val} bps`}
                                     </span>
@@ -985,6 +1040,14 @@ export default function Dashboard() {
       {lastFetchTime && (() => {
         const liveDepth = computeDepthStats(currentData);
         if (liveDepth.length === 0) return null;
+
+        // Group by asset
+        const byAsset: Record<string, DepthStats[]> = {};
+        for (const d of liveDepth) {
+          if (!byAsset[d.asset]) byAsset[d.asset] = [];
+          byAsset[d.asset].push(d);
+        }
+
         return (
           <div className="mb-8">
             <div className="flex items-center justify-between mb-3">
@@ -1002,74 +1065,70 @@ export default function Dashboard() {
               </button>
             </div>
             {showLiveDepth && (
-              <div
-                className="rounded-lg overflow-hidden"
-                style={{ border: "1px solid var(--border)" }}
-              >
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr style={{ background: "var(--bg-card)" }}>
-                      <th className="text-left p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Exchange</th>
-                      <th className="text-left p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Asset</th>
-                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Bid Lvls</th>
-                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Ask Lvls</th>
-                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Best Bid</th>
-                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Best Ask</th>
-                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Spread</th>
-                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Bid Depth</th>
-                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Ask Depth</th>
-                      <th className="text-right p-3 font-semibold text-xs uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>Max Fill</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {liveDepth.map((d, i) => {
-                      const ex = EXCHANGES.find((e) => e.id === d.exchange);
-                      return (
-                        <tr
-                          key={`${d.exchange}-${d.asset}`}
-                          style={{
-                            borderTop: i > 0 ? "1px solid var(--border)" : undefined,
-                          }}
-                        >
-                          <td className="p-3">
-                            <span
-                              className="text-xs font-medium px-2 py-0.5 rounded"
-                              style={{
-                                background: (ex?.color ?? "#888") + "22",
-                                color: ex?.color ?? "#888",
-                              }}
-                            >
-                              {ex?.name ?? d.exchange}
-                            </span>
-                          </td>
-                          <td className="p-3 font-medium text-sm">{d.asset}</td>
-                          <td className="p-3 text-right font-mono text-sm" style={{ color: "var(--accent-green)" }}>{d.bidLevels.toLocaleString()}</td>
-                          <td className="p-3 text-right font-mono text-sm" style={{ color: "var(--accent-red, #f87171)" }}>{d.askLevels.toLocaleString()}</td>
-                          <td className="p-3 text-right font-mono text-sm">{d.bestBid > 0 ? d.bestBid.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "--"}</td>
-                          <td className="p-3 text-right font-mono text-sm">{d.bestAsk > 0 ? d.bestAsk.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "--"}</td>
-                          <td
-                            className="p-3 text-right font-mono text-sm"
-                            style={{ color: d.spreadBps < 2 ? "var(--accent-green)" : d.spreadBps < 10 ? "#facc15" : "#f87171" }}
-                          >
-                            {d.spreadBps.toFixed(2)} bps
-                          </td>
-                          <td className="p-3 text-right font-mono text-sm">{fmtDepthUsd(d.totalBidNotional)}</td>
-                          <td className="p-3 text-right font-mono text-sm">{fmtDepthUsd(d.totalAskNotional)}</td>
-                          <td
-                            className="p-3 text-right font-mono text-sm font-semibold"
-                            style={{ color: "var(--accent-blue, #60a5fa)" }}
-                          >
-                            {fmtDepthUsd(d.maxFillableNotional)}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                <div className="px-3 py-2 text-xs" style={{ borderTop: "1px solid var(--border)", color: "var(--text-secondary)", background: "var(--bg-card)" }}>
-                  Bid/Ask Depth = sum(price × size) across all levels. Max Fill = min(Bid Depth, Ask Depth) — the largest notional provably fillable at this snapshot.
-                  Spread colored: green &lt; 2 bps · amber &lt; 10 bps · red ≥ 10 bps.
-                  Captured {lastFetchTime.toLocaleTimeString()}.
+              <div className="space-y-4">
+                {Object.entries(byAsset).map(([asset, stats]) => {
+                  const maxDepth = Math.max(...stats.flatMap(s => [s.totalBidNotional, s.totalAskNotional]));
+                  return (
+                    <div key={asset} className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+                      <div className="px-4 py-2 text-sm font-bold" style={{ background: "var(--bg-card)", borderBottom: "1px solid var(--border)" }}>
+                        {asset}
+                      </div>
+                      <div className="divide-y" style={{ borderColor: "var(--border)" }}>
+                        {stats.map((d) => {
+                          const ex = EXCHANGES.find((e) => e.id === d.exchange);
+                          const bidPct = maxDepth > 0 ? (d.totalBidNotional / maxDepth) * 100 : 0;
+                          const askPct = maxDepth > 0 ? (d.totalAskNotional / maxDepth) * 100 : 0;
+                          return (
+                            <div key={d.exchange} className="px-4 py-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-medium px-2 py-0.5 rounded" style={{ background: (ex?.color ?? "#888") + "22", color: ex?.color ?? "#888" }}>
+                                  {ex?.name ?? d.exchange}
+                                </span>
+                                <div className="flex gap-4 text-xs font-mono" style={{ color: "var(--text-secondary)" }}>
+                                  <span>Mid: ${d.midPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                                  <span style={{ color: d.spreadBps < 2 ? "var(--accent-green)" : d.spreadBps < 10 ? "#facc15" : "#f87171" }}>
+                                    Spread: {d.spreadBps.toFixed(2)} bps
+                                  </span>
+                                  <span>{d.bidLevels + d.askLevels} levels</span>
+                                </div>
+                              </div>
+                              {/* Depth bars */}
+                              <div className="space-y-1.5">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] w-7 text-right" style={{ color: "var(--accent-green)" }}>BID</span>
+                                  <div className="flex-1 h-4 rounded" style={{ background: "var(--bg-secondary)" }}>
+                                    <div
+                                      className="h-full rounded transition-all"
+                                      style={{ width: `${bidPct}%`, background: "var(--accent-green)", opacity: 0.7 }}
+                                    />
+                                  </div>
+                                  <span className="text-xs font-mono w-16 text-right">{fmtDepthUsd(d.totalBidNotional)}</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] w-7 text-right" style={{ color: "#f87171" }}>ASK</span>
+                                  <div className="flex-1 h-4 rounded" style={{ background: "var(--bg-secondary)" }}>
+                                    <div
+                                      className="h-full rounded transition-all"
+                                      style={{ width: `${askPct}%`, background: "#f87171", opacity: 0.7 }}
+                                    />
+                                  </div>
+                                  <span className="text-xs font-mono w-16 text-right">{fmtDepthUsd(d.totalAskNotional)}</span>
+                                </div>
+                              </div>
+                              <div className="mt-1.5 text-[10px]" style={{ color: "var(--text-secondary)" }}>
+                                Max fillable: <span className="font-mono" style={{ color: "var(--accent-blue, #60a5fa)" }}>{fmtDepthUsd(d.maxFillableNotional)}</span>
+                                {" · "}Best bid: <span className="font-mono">{d.bestBid.toLocaleString(undefined, { maximumFractionDigits: 3 })}</span>
+                                {" · "}Best ask: <span className="font-mono">{d.bestAsk.toLocaleString(undefined, { maximumFractionDigits: 3 })}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="text-xs px-1" style={{ color: "var(--text-secondary)" }}>
+                  Bars show bid/ask depth relative to deepest book in each asset group. Max fillable = min(bid depth, ask depth). Spread: green &lt; 2 bps · amber &lt; 10 bps · red ≥ 10 bps. Captured {lastFetchTime.toLocaleTimeString()}.
                 </div>
               </div>
             )}
@@ -1248,8 +1307,7 @@ export default function Dashboard() {
 
       {/* Footer */}
       <div className="mt-6 text-xs text-center" style={{ color: "var(--text-secondary)" }}>
-        Crypto Centre of Excellence — Execution Cost Research |
-        Built March 2026
+        Execution Cost Research — Perp Exchange Slippage Dashboard
       </div>
     </div>
   );

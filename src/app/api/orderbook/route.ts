@@ -258,48 +258,71 @@ async function fetchBinance(asset: string, symbolOverride?: string): Promise<Ord
     };
   }
 
-  try {
-    const res = await fetch(
-      `https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=1000`,
-      { headers: { "User-Agent": "Mozilla/5.0" } }
-    );
-    const data = await res.json();
+  const url = `https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=1000`;
 
-    if (data.code && data.msg) {
-      return {
-        exchange: "binance",
-        asset,
-        bids: [],
-        asks: [],
-        timestamp: Date.now(),
-        error: `Binance error: ${data.msg}`,
-      };
+  // Try direct fetch first, then fallback to allorigins proxy (handles Vercel IP blocks)
+  const attempts = [
+    () => fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; slippage-dashboard/1.0)",
+        "Accept": "application/json",
+      },
+      signal: AbortSignal.timeout(8000),
+    }),
+    () => fetch(
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+      { signal: AbortSignal.timeout(10000) }
+    ),
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const res = await attempt();
+      if (!res.ok) continue;
+      const data = await res.json();
+
+      if (data.code && data.msg) {
+        // Binance-level error (e.g. invalid symbol)
+        return {
+          exchange: "binance",
+          asset,
+          bids: [],
+          asks: [],
+          timestamp: Date.now(),
+          error: `Binance: ${data.msg}`,
+        };
+      }
+
+      const bids: OrderBookLevel[] = (data.bids || []).map(
+        (l: [string, string]) => ({
+          price: parseFloat(l[0]),
+          size: parseFloat(l[1]),
+        })
+      );
+      const asks: OrderBookLevel[] = (data.asks || []).map(
+        (l: [string, string]) => ({
+          price: parseFloat(l[0]),
+          size: parseFloat(l[1]),
+        })
+      );
+
+      if (bids.length === 0 && asks.length === 0) continue;
+
+      return { exchange: "binance", asset, bids, asks, timestamp: Date.now() };
+    } catch {
+      // Try next attempt
+      continue;
     }
-
-    const bids: OrderBookLevel[] = (data.bids || []).map(
-      (l: [string, string]) => ({
-        price: parseFloat(l[0]),
-        size: parseFloat(l[1]),
-      })
-    );
-    const asks: OrderBookLevel[] = (data.asks || []).map(
-      (l: [string, string]) => ({
-        price: parseFloat(l[0]),
-        size: parseFloat(l[1]),
-      })
-    );
-
-    return { exchange: "binance", asset, bids, asks, timestamp: Date.now() };
-  } catch (e) {
-    return {
-      exchange: "binance",
-      asset,
-      bids: [],
-      asks: [],
-      timestamp: Date.now(),
-      error: String(e),
-    };
   }
+
+  return {
+    exchange: "binance",
+    asset,
+    bids: [],
+    asks: [],
+    timestamp: Date.now(),
+    error: "Binance unreachable (IP block). Try enabling Binance in a local environment.",
+  };
 }
 
 // ─── ASTER ─────────────────────────────────────────────────────
