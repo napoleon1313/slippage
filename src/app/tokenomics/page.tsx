@@ -1,751 +1,677 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ComposedChart, BarChart, LineChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Cell, Legend,
 } from "recharts";
 import {
-  TOKEN_CONFIGS, FEE_BREAKDOWNS, BUYBACK_EVENTS, BUYBACK_TOTALS, TRADFI_COMPS,
-  calcPE, aggregateBuybacksByGranularity, fmtCompact, fmtTokens,
+  TOKEN_CONFIGS, TRADFI_COMPS, MILESTONES, REPORTED_TOTALS, ANALYST_NOTES, ANALYST_NOTES_UPDATED,
+  calcPE, calcBuybackYield, calcEffectiveRate, annualize30d, aggregateDaily, periodKey, sumWindow,
+  fmtCompact, fmtTokens, fmtPrice, fmtPct, generateInsights,
   type LiveTokenData, type TimeGranularity, type TokenomicsApiResponse,
+  type TokenBuybackData, type BuybacksApiResponse, type TokenSnapshot, type Insight,
 } from "@/lib/tokenomics";
-import type { TokenBuybackData, BuybacksApiResponse } from "@/app/api/buybacks/route";
 
-// ─── Helpers ───────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────
 
-function fmt$(n: number | null | undefined): string {
-  if (n === null || n === undefined) return "—";
-  return fmtCompact(n);
-}
-
-function fmtPct(n: number): string {
-  return `${(n * 100).toFixed(0)}%`;
-}
-
-function fmtPE(pe: number | null): string {
-  if (pe === null || !isFinite(pe) || isNaN(pe)) return "N/A";
-  return `${pe.toFixed(1)}x`;
-}
-
-function Skeleton({ w = "80px" }: { w?: string }) {
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        width: w,
-        height: "14px",
-        borderRadius: "4px",
-        background: "var(--border)",
-        animation: "pulse 1.5s ease-in-out infinite",
-        verticalAlign: "middle",
-      }}
-    />
-  );
-}
+const LIVE_REFRESH_MS = 5 * 60_000;     // /api/tokenomics
+const BUYBACK_REFRESH_MS = 60 * 60_000; // /api/buybacks
+const HISTORY_DAYS = 730;
 
 const TOOLTIP_STYLE = {
-  contentStyle: {
-    background: "#111827",
-    border: "1px solid rgba(255,255,255,0.12)",
-    borderRadius: "6px",
-    fontSize: "12px",
-    color: "#fff",
-  },
+  contentStyle: { background: "#111827", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", fontSize: "12px", color: "#fff" },
   labelStyle: { color: "#e5e7eb", fontWeight: 600, marginBottom: "4px" },
   itemStyle: { color: "#fff" },
   cursor: { fill: "rgba(255,255,255,0.04)" },
 };
-
 const CHART_AXIS = { fill: "var(--text-secondary)", fontSize: 11 };
 const CHART_GRID = { strokeDasharray: "3 3", stroke: "var(--border)" };
 
-// ─── Pill toggle ───────────────────────────────────────────────
+const card = { background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "8px", padding: "16px" } as const;
+const section = { ...card, marginBottom: "24px" } as const;
+const labelStyle = { fontSize: "11px", color: "var(--text-secondary)", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: "2px" };
+const subtle = { fontSize: "11px", color: "var(--text-secondary)" } as const;
 
-function PillGroup<T extends string>({
-  options,
-  value,
-  onChange,
-}: {
-  options: { label: string; value: T }[];
-  value: T;
-  onChange: (v: T) => void;
-}) {
+// ─── Small helpers / atoms ────────────────────────────────────
+
+function fmt$(n: number | null | undefined): string {
+  return n === null || n === undefined ? "—" : fmtCompact(n);
+}
+function fmtPE(pe: number | null): string {
+  return pe === null || !isFinite(pe) || isNaN(pe) ? "N/A" : `${pe.toFixed(1)}x`;
+}
+function tickerOf(id: string): string {
+  return TOKEN_CONFIGS.find((c) => c.id === id)?.ticker ?? id;
+}
+function timeAgo(ms: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ${m % 60}m ago`;
+}
+function mmss(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function Skeleton({ w = "80px" }: { w?: string }) {
+  return <span style={{ display: "inline-block", width: w, height: "14px", borderRadius: "4px", background: "var(--border)", animation: "pulse 1.5s ease-in-out infinite", verticalAlign: "middle" }} />;
+}
+
+function ChangeBadge({ v, label }: { v: number | null; label: string }) {
+  const color = v === null ? "var(--text-secondary)" : v > 0 ? "#4ade80" : v < 0 ? "#f87171" : "var(--text-secondary)";
+  return (
+    <div style={{ textAlign: "center" }}>
+      <div style={{ ...subtle, fontSize: "10px" }}>{label}</div>
+      <div style={{ fontSize: "13px", fontWeight: 600, color }}>{v === null ? "—" : fmtPct(v, 1, true)}</div>
+    </div>
+  );
+}
+
+function QualityBadge({ q }: { q: "onchain" | "tracked" | "estimated" }) {
+  const map = {
+    onchain: { label: "ON-CHAIN", color: "#4ade80" },
+    tracked: { label: "TRACKED", color: "#60a5fa" },
+    estimated: { label: "ESTIMATE", color: "#f59e0b" },
+  }[q];
+  return <span style={{ fontSize: "9px", padding: "1px 6px", borderRadius: "999px", fontWeight: 700, background: map.color + "22", color: map.color, letterSpacing: "0.05em" }}>{map.label}</span>;
+}
+
+function PillGroup<T extends string>({ options, value, onChange }: { options: { label: string; value: T }[]; value: T; onChange: (v: T) => void }) {
   return (
     <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
       {options.map((o) => (
-        <button
-          key={o.value}
-          onClick={() => onChange(o.value)}
-          style={{
-            padding: "3px 10px",
-            borderRadius: "999px",
-            fontSize: "12px",
-            fontWeight: value === o.value ? 600 : 400,
-            background: value === o.value ? "#2563eb" : "var(--bg-secondary)",
-            color: value === o.value ? "#fff" : "var(--text-secondary)",
-            border: `1px solid ${value === o.value ? "#2563eb" : "var(--border)"}`,
-            cursor: "pointer",
-          }}
-        >
-          {o.label}
-        </button>
+        <button key={o.value} onClick={() => onChange(o.value)} style={{
+          padding: "3px 10px", borderRadius: "999px", fontSize: "12px", fontWeight: value === o.value ? 600 : 400,
+          background: value === o.value ? "#2563eb" : "var(--bg-secondary)", color: value === o.value ? "#fff" : "var(--text-secondary)",
+          border: `1px solid ${value === o.value ? "#2563eb" : "var(--border)"}`, cursor: "pointer",
+        }}>{o.label}</button>
       ))}
     </div>
   );
 }
 
-// ─── Section header ────────────────────────────────────────────
-
-function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+function Toggle({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: "16px" }}>
-      <h2 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
-        {title}
-      </h2>
-      {subtitle && (
-        <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "4px" }}>
-          {subtitle}
-        </p>
-      )}
+    <button onClick={onClick} style={{
+      padding: "3px 10px", borderRadius: "999px", fontSize: "12px", fontWeight: on ? 600 : 400,
+      background: on ? "#7c3aed" : "var(--bg-secondary)", color: on ? "#fff" : "var(--text-secondary)",
+      border: `1px solid ${on ? "#7c3aed" : "var(--border)"}`, cursor: "pointer", whiteSpace: "nowrap",
+    }}>{children}</button>
+  );
+}
+
+function SectionHeader({ title, subtitle, right }: { title: string; subtitle?: string; right?: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", marginBottom: "16px" }}>
+      <div>
+        <h2 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>{title}</h2>
+        {subtitle && <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "4px", maxWidth: "820px" }}>{subtitle}</p>}
+      </div>
+      {right}
     </div>
   );
 }
 
-// ─── Main page ─────────────────────────────────────────────────
+function Sparkline({ data, color }: { data: [string, number][]; color: string }) {
+  const rows = data.map(([d, v]) => ({ d, v }));
+  if (rows.length < 2) return null;
+  return (
+    <ResponsiveContainer width="100%" height={36}>
+      <LineChart data={rows} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
+        <Line type="monotone" dataKey="v" stroke={color} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+        <Tooltip {...TOOLTIP_STYLE} formatter={(v) => [fmtCompact(v as number), "Fees"]} labelFormatter={(l) => String(l)} />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────
 
 export default function TokenomicsPage() {
-  const [liveData, setLiveData] = useState<LiveTokenData[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [buybackMetric, setBuybackMetric] = useState<"usd" | "tokens" | "pct_circ" | "pct_fdv">("usd");
-  const [buybackGranularity, setBuybackGranularity] = useState<TimeGranularity>("monthly");
-  const [supplyBasis, setSupplyBasis] = useState<"circ" | "fdv">("circ");
-  const [showCumulative, setShowCumulative] = useState(false);
+  // Live data + refresh bookkeeping
+  const [live, setLive] = useState<LiveTokenData[] | null>(null);
+  const [liveAt, setLiveAt] = useState<number | null>(null);
+  const [liveErr, setLiveErr] = useState<string | null>(null);
+  const [buybacks, setBuybacks] = useState<TokenBuybackData[] | null>(null);
+  const [buybacksAt, setBuybacksAt] = useState<number | null>(null);
+  const [buybacksLoading, setBuybacksLoading] = useState(true);
+  const [now, setNow] = useState(Date.now());
+  const liveTimer = useRef<number | null>(null);
 
-  // Live on-chain buyback data
-  const [liveBuybacks, setLiveBuybacks] = useState<TokenBuybackData[] | null>(null);
-  const [liveBuybacksLoading, setLiveBuybacksLoading] = useState(true);
-  const [liveDaysStr, setLiveDaysStr] = useState<"30" | "60" | "90">("90");
-  const liveDays = parseInt(liveDaysStr) as 30 | 60 | 90;
+  // View state
+  const [valuationBasis, setValuationBasis] = useState<"mcap" | "fdv">("mcap");
+  const [liveWindow, setLiveWindow] = useState<"30" | "60" | "90" | "180">("90");
   const [liveMetric, setLiveMetric] = useState<"usd" | "tokens">("usd");
-  const [liveShowCumulative, setLiveShowCumulative] = useState(true);
+  const [liveCumulative, setLiveCumulative] = useState(true);
+  const [histGranularity, setHistGranularity] = useState<TimeGranularity>("monthly");
+  const [histMetric, setHistMetric] = useState<"usd" | "tokens" | "pct_circ">("usd");
+  const [histCumulative, setHistCumulative] = useState(false);
+  const [histMilestones, setHistMilestones] = useState(true);
+  const [supplyBasis, setSupplyBasis] = useState<"circ" | "total">("circ");
+  const [noteFilter, setNoteFilter] = useState<string>("all");
+  const [timelineFilter, setTimelineFilter] = useState<string>("all");
 
-  useEffect(() => {
-    fetch("/api/tokenomics")
-      .then((r) => r.json())
-      .then((d: TokenomicsApiResponse) => setLiveData(d.data))
-      .catch(() => setLiveData(null))
-      .finally(() => setLoading(false));
+  const fetchLive = useCallback(async () => {
+    try {
+      const r = await fetch("/api/tokenomics", { cache: "no-store" });
+      const d: TokenomicsApiResponse = await r.json();
+      // Keep the last non-null value per field so an upstream hiccup never blanks the page.
+      setLive((prev) => d.data.map((row) => {
+        const old = prev?.find((p) => p.tokenId === row.tokenId);
+        if (!old) return row;
+        const oldRec = old as unknown as Record<string, unknown>;
+        const merged = { ...row } as unknown as Record<string, unknown>;
+        for (const [k, v] of Object.entries(row)) {
+          if (v === null && oldRec[k] !== null && k !== "errors") merged[k] = oldRec[k];
+        }
+        return merged as unknown as LiveTokenData;
+      }));
+      setLiveAt(Date.now());
+      setLiveErr(null);
+    } catch (e) {
+      setLiveErr(String(e));
+    }
+  }, []);
+
+  const fetchBuybacks = useCallback(async () => {
+    setBuybacksLoading(true);
+    try {
+      const r = await fetch(`/api/buybacks?days=${HISTORY_DAYS}`, { cache: "no-store" });
+      const d: BuybacksApiResponse = await r.json();
+      setBuybacks(d.data);
+      setBuybacksAt(Date.now());
+    } catch {
+      setBuybacks(null);
+    } finally {
+      setBuybacksLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    setLiveBuybacksLoading(true);
-    fetch(`/api/buybacks?days=${liveDays}`)
-      .then((r) => r.json())
-      .then((d: BuybacksApiResponse) => setLiveBuybacks(d.data))
-      .catch(() => setLiveBuybacks(null))
-      .finally(() => setLiveBuybacksLoading(false));
-  }, [liveDays]);
+    fetchLive();
+    fetchBuybacks();
+    const a = window.setInterval(fetchLive, LIVE_REFRESH_MS);
+    const b = window.setInterval(fetchBuybacks, BUYBACK_REFRESH_MS);
+    const c = window.setInterval(() => setNow(Date.now()), 1000);
+    liveTimer.current = a;
+    return () => { clearInterval(a); clearInterval(b); clearInterval(c); };
+  }, [fetchLive, fetchBuybacks]);
 
-  // Merge seed + live
-  const records = useMemo(() =>
-    TOKEN_CONFIGS.map((cfg) => ({
-      cfg,
-      live: liveData?.find((d) => d.tokenId === cfg.id) ?? null,
-      totals: BUYBACK_TOTALS.find((t) => t.tokenId === cfg.id)!,
-      breakdown: FEE_BREAKDOWNS.find((f) => f.tokenId === cfg.id)!,
-    })),
-  [liveData]);
+  const loading = live === null && liveErr === null;
 
-  // Derived values with live-or-seed fallback
-  const getCirc = (id: string) => {
-    const r = records.find((r) => r.cfg.id === id)!;
-    return r.live?.circulatingSupply ?? r.cfg.circulatingSupply;
-  };
-  const getPrice = (id: string) => {
-    const r = records.find((r) => r.cfg.id === id)!;
-    return r.live?.price ?? null;
-  };
-  const getMktCap = (id: string) => {
-    const r = records.find((r) => r.cfg.id === id)!;
-    return r.live?.marketCap ?? null;
-  };
-  const getFDV = (id: string) => {
-    const r = records.find((r) => r.cfg.id === id)!;
-    return r.live?.fdv ?? null;
-  };
-  const getFees30d = (id: string) => {
-    const r = records.find((r) => r.cfg.id === id)!;
-    return r.live?.fees30d ?? null;
-  };
-  const getAnnualizedRevenue = (id: string) => {
-    const fees = getFees30d(id);
-    return fees !== null ? fees * (365 / 30) : null;
-  };
+  // ── Derived per-token rows ─────────────────────────────────
+  const rows = useMemo(() => TOKEN_CONFIGS.map((cfg) => {
+    const l = live?.find((d) => d.tokenId === cfg.id) ?? null;
+    const bb = buybacks?.find((b) => b.tokenId === cfg.id) ?? null;
+    const reported = REPORTED_TOTALS.find((r) => r.tokenId === cfg.id)!;
+    const circ = l?.circulatingSupply ?? cfg.circulatingSupply;
+    const total = l?.totalSupply ?? cfg.totalSupply;
+    const mcap = l?.marketCap ?? null;
+    const fdv = l?.fdv ?? null;
+    const valuation = valuationBasis === "mcap" ? mcap : fdv;
+    const annBB = annualize30d(l?.buyback30d ?? null);
+    const annFees = annualize30d(l?.fees30d ?? null);
+    const pe = valuation !== null && annBB !== null ? calcPE(valuation, annBB) : null;
+    const ps = valuation !== null && annFees ? valuation / annFees : null;
+    const effRate = calcEffectiveRate(l?.buyback30d ?? null, l?.fees30d ?? null);
+    const bbYield = calcBuybackYield(valuation, annBB);
 
-  // P/E for each DEX
-  const peData = useMemo(() =>
-    records.map(({ cfg }) => {
-      const circ = getCirc(cfg.id);
-      const price = getPrice(cfg.id);
-      const annRev = getAnnualizedRevenue(cfg.id);
-      if (!price || !annRev) return { id: cfg.id, name: cfg.name, color: cfg.color, pe: null };
-      const pe = calcPE(circ, price, annRev, cfg.buybackRatePct);
-      return { id: cfg.id, name: cfg.name, color: cfg.color, pe: isFinite(pe) ? pe : null };
-    }),
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  [records]);
-
-  // Buyback history chart data — merge all DEXes into period-keyed rows
-  const buybackChartData = useMemo(() => {
-    const allPeriods = new Set<string>();
-    const byToken: Record<string, Map<string, { tokens: number; usd: number; isEstimated: boolean }>> = {};
-
-    for (const cfg of TOKEN_CONFIGS) {
-      const agg = aggregateBuybacksByGranularity(BUYBACK_EVENTS, cfg.id, buybackGranularity);
-      byToken[cfg.id] = new Map(agg.map((a) => [a.period, a]));
-      agg.forEach((a) => allPeriods.add(a.period));
+    // Tokens removed: live where possible, else reported + tracked increments.
+    let tokensRemoved: number | null = null;
+    let tokensRemovedNote = "";
+    if (cfg.id === "hyperliquid" && l?.onChainTokensHeld) {
+      tokensRemoved = l.onChainTokensHeld;
+      tokensRemovedNote = "Assistance Fund spot balance, on-chain";
+    } else if (bb && bb.daily.some((d) => d.tokens > 0)) {
+      const since = cfg.id === "lighter" ? "2026-07-10" : cfg.id === "aster" ? "2026-08-10" : "1970-01-01";
+      const inc = bb.daily.filter((d) => d.date > since).reduce((s, d) => s + d.tokens, 0);
+      const base = cfg.id === "edgex" ? 0 : (reported.tokensRemoved ?? 0);
+      tokensRemoved = base + inc;
+      tokensRemovedNote = cfg.id === "edgex"
+        ? "Tracked buybacks ÷ daily price since Apr 2026"
+        : `${reported.tokensRemovedLabel.split(".")[0]} + tracked buys since`;
+    } else if (reported.tokensRemoved) {
+      tokensRemoved = reported.tokensRemoved;
+      tokensRemovedNote = reported.tokensRemovedLabel;
     }
 
-    const cumUsd: Record<string, number> = {};
+    const usdAllTime = cfg.id === "hyperliquid" && l?.onChainCostBasisUsd ? l.onChainCostBasisUsd : (l?.buybackAllTime ?? null);
+    const usdAllTimeNote = cfg.id === "hyperliquid" && l?.onChainCostBasisUsd
+      ? "Fund cost basis, on-chain"
+      : l?.buybackTrackedSince ? `DefiLlama, tracked since ${l.buybackTrackedSince}` : "";
 
-    return Array.from(allPeriods)
-      .sort()
-      .map((period) => {
-        const row: Record<string, number | string | boolean> = { period };
-        for (const cfg of TOKEN_CONFIGS) {
-          const entry = byToken[cfg.id]?.get(period);
-          const tokens = entry?.tokens ?? 0;
-          const usd = entry?.usd ?? 0;
-          const circ = getCirc(cfg.id);
-          const fdvTokens = getFDV(cfg.id)
-            ? getFDV(cfg.id)! / (getPrice(cfg.id) ?? 1)
-            : cfg.totalSupply;
+    return { cfg, l, bb, reported, circ, total, mcap, fdv, valuation, annBB, annFees, pe, ps, effRate, bbYield, tokensRemoved, tokensRemovedNote, usdAllTime, usdAllTimeNote };
+  }), [live, buybacks, valuationBasis]);
 
-          if (buybackMetric === "usd") {
-            row[cfg.id] = usd;
-          } else if (buybackMetric === "tokens") {
-            row[cfg.id] = tokens;
-          } else if (buybackMetric === "pct_circ") {
-            row[cfg.id] = circ > 0 ? parseFloat(((tokens / circ) * 100).toFixed(6)) : 0;
-          } else {
-            row[cfg.id] = fdvTokens > 0 ? parseFloat(((tokens / fdvTokens) * 100).toFixed(6)) : 0;
-          }
+  // ── Insights ───────────────────────────────────────────────
+  const insights: Insight[] = useMemo(() => {
+    if (!live) return [];
+    const snaps: TokenSnapshot[] = rows.map((r) => ({
+      id: r.cfg.id, name: r.cfg.name, ticker: r.cfg.ticker,
+      price: r.l?.price ?? null, ch7d: r.l?.priceChange7d ?? null, ch30d: r.l?.priceChange30d ?? null,
+      athChangePct: r.l?.athChangePct ?? null, marketCap: r.mcap, fdv: r.fdv, fees30d: r.l?.fees30d ?? null,
+      buyback7d: r.l?.buyback7d ?? null, buyback30d: r.l?.buyback30d ?? null,
+      pe: r.pe !== null && isFinite(r.pe) ? r.pe : null, buybackYield: r.bbYield, effectiveRate: r.effRate,
+    }));
+    return generateInsights(snaps);
+  }, [rows, live]);
 
-          row[`${cfg.id}_est`] = entry?.isEstimated ?? false;
-          cumUsd[cfg.id] = (cumUsd[cfg.id] ?? 0) + usd;
-          row[`${cfg.id}_cum`] = cumUsd[cfg.id];
-        }
-        return row;
-      });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [buybackGranularity, buybackMetric, records]);
-
-  // Live on-chain chart data — daily rows merged across all tokens
-  const liveBuybackChartData = useMemo(() => {
-    if (!liveBuybacks) return [];
-    const allDates = new Set<string>();
-    const byToken: Record<string, Map<string, { tokens: number; usd: number; txCount: number }>> = {};
-
-    for (const td of liveBuybacks) {
-      byToken[td.tokenId] = new Map(td.daily.map((d) => [d.date, d]));
-      td.daily.forEach((d) => allDates.add(d.date));
+  // ── Live window chart data ─────────────────────────────────
+  const liveDays = parseInt(liveWindow);
+  const liveChart = useMemo(() => {
+    if (!buybacks) return [];
+    const cutoff = new Date(Date.now() - liveDays * 86_400_000).toISOString().slice(0, 10);
+    const dates = new Set<string>();
+    const byTok: Record<string, Map<string, { usd: number; tokens: number; txCount: number }>> = {};
+    for (const b of buybacks) {
+      byTok[b.tokenId] = new Map(b.daily.filter((d) => d.date >= cutoff).map((d) => [d.date, d]));
+      byTok[b.tokenId].forEach((_, k) => dates.add(k));
     }
-
-    const cumUsd: Record<string, number> = {};
-    const cumTokens: Record<string, number> = {};
-
-    return Array.from(allDates)
-      .sort()
-      .map((date) => {
-        const row: Record<string, number | string> = { date };
-        for (const cfg of TOKEN_CONFIGS) {
-          const entry = byToken[cfg.id]?.get(date);
-          const usd = entry?.usd ?? 0;
-          const tokens = entry?.tokens ?? 0;
-          row[cfg.id] = liveMetric === "usd" ? usd : tokens;
-          row[`${cfg.id}_tx`] = entry?.txCount ?? 0;
-          cumUsd[cfg.id] = (cumUsd[cfg.id] ?? 0) + usd;
-          cumTokens[cfg.id] = (cumTokens[cfg.id] ?? 0) + tokens;
-          row[`${cfg.id}_cum`] = liveMetric === "usd" ? cumUsd[cfg.id] : cumTokens[cfg.id];
-        }
-        return row;
-      });
-  }, [liveBuybacks, liveMetric]);
-
-  // Summary stats for the live section header
-  const liveSummary = useMemo(() => {
-    if (!liveBuybacks) return null;
-    return liveBuybacks.map((td) => {
-      const totalUsd = td.daily.reduce((s, d) => s + d.usd, 0);
-      const totalTokens = td.daily.reduce((s, d) => s + d.tokens, 0);
-      const totalTx = td.daily.reduce((s, d) => s + d.txCount, 0);
-      return { tokenId: td.tokenId, totalUsd, totalTokens, totalTx, isLive: td.isLive, source: td.source };
+    const cum: Record<string, number> = {};
+    return [...dates].sort().map((date) => {
+      const row: Record<string, number | string> = { date };
+      for (const cfg of TOKEN_CONFIGS) {
+        const e = byTok[cfg.id]?.get(date);
+        const v = liveMetric === "usd" ? (e?.usd ?? 0) : (e?.tokens ?? 0);
+        row[cfg.id] = v;
+        row[`${cfg.id}_tx`] = e?.txCount ?? 0;
+        cum[cfg.id] = (cum[cfg.id] ?? 0) + v;
+        row[`${cfg.id}_cum`] = cum[cfg.id];
+      }
+      return row;
     });
-  }, [liveBuybacks]);
+  }, [buybacks, liveDays, liveMetric]);
 
-  // % of supply bought back
-  const supplyPctData = useMemo(() =>
-    records.map(({ cfg, totals }) => {
-      const basis = supplyBasis === "circ"
-        ? (getCirc(cfg.id))
-        : (getFDV(cfg.id) ? getFDV(cfg.id)! / (getPrice(cfg.id) ?? 1) : cfg.totalSupply);
-      const pct = basis > 0 ? (totals.totalTokensBoughtBack / basis) * 100 : 0;
-      return { name: cfg.ticker, pct: parseFloat(pct.toFixed(4)), color: cfg.color, id: cfg.id };
-    }),
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  [records, supplyBasis]);
+  const liveSummary = useMemo(() => buybacks?.map((b) => ({
+    tokenId: b.tokenId,
+    usd: sumWindow(b.daily, liveDays, "usd"),
+    tokens: sumWindow(b.daily, liveDays, "tokens"),
+    tx: b.daily.filter((d) => d.date >= new Date(Date.now() - liveDays * 86_400_000).toISOString().slice(0, 10)).reduce((s, d) => s + d.txCount, 0),
+    quality: b.quality,
+    source: b.source,
+    error: b.error,
+    lastDate: b.daily.at(-1)?.date ?? null,
+  })) ?? null, [buybacks, liveDays]);
 
-  // Fee comparison data
-  const feeCompData = useMemo(() =>
-    records.map(({ cfg }) => ({
-      name: cfg.ticker,
-      fees30d: getFees30d(cfg.id) ?? 0,
-      color: cfg.color,
-    })),
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  [records]);
+  // ── History chart (full range, aggregated) ─────────────────
+  const histChart = useMemo(() => {
+    if (!buybacks) return [];
+    const periods = new Set<string>();
+    const byTok: Record<string, Map<string, { usd: number; tokens: number }>> = {};
+    for (const b of buybacks) {
+      const agg = aggregateDaily(b.daily, histGranularity);
+      byTok[b.tokenId] = new Map(agg.map((a) => [a.period, a]));
+      agg.forEach((a) => periods.add(a.period));
+    }
+    const cum: Record<string, number> = {};
+    return [...periods].sort().map((period) => {
+      const row: Record<string, number | string> = { period };
+      for (const r of rows) {
+        const e = byTok[r.cfg.id]?.get(period);
+        const usd = e?.usd ?? 0, tokens = e?.tokens ?? 0;
+        const v = histMetric === "usd" ? usd : histMetric === "tokens" ? tokens : (r.circ > 0 ? (tokens / r.circ) * 100 : 0);
+        row[r.cfg.id] = histMetric === "pct_circ" ? parseFloat(v.toFixed(4)) : v;
+        cum[r.cfg.id] = (cum[r.cfg.id] ?? 0) + usd;
+        row[`${r.cfg.id}_cum`] = cum[r.cfg.id];
+      }
+      return row;
+    });
+  }, [buybacks, histGranularity, histMetric, rows]);
 
-  // Fee distribution stacked data
-  const feeDistData = useMemo(() =>
-    records.map(({ cfg, breakdown }) => ({
-      name: cfg.ticker,
-      Buyback: parseFloat((breakdown.buybackPct * 100).toFixed(0)),
-      "LP Rewards": parseFloat((breakdown.lpRewardsPct * 100).toFixed(0)),
-      Treasury: parseFloat((breakdown.treasuryPct * 100).toFixed(0)),
-      Other: parseFloat((breakdown.otherPct * 100).toFixed(0)),
-      color: cfg.color,
-    })),
-  [records]);
+  const histMarkers = useMemo(() => {
+    if (!histMilestones || histGranularity === "daily") return [];
+    const keys = new Set(histChart.map((r) => r.period as string));
+    return MILESTONES.filter((m) => m.kind === "burn" || m.kind === "policy")
+      .map((m) => ({ ...m, key: periodKey(m.date, histGranularity) }))
+      .filter((m) => keys.has(m.key));
+  }, [histChart, histGranularity, histMilestones]);
 
-  const card = {
-    background: "var(--bg-card)",
-    border: "1px solid var(--border)",
-    borderRadius: "8px",
-    padding: "16px",
+  // ── Supply % ───────────────────────────────────────────────
+  const supplyPct = rows.map((r) => {
+    const basis = supplyBasis === "circ" ? r.circ : r.total;
+    const pct = r.tokensRemoved !== null && basis > 0 ? (r.tokensRemoved / basis) * 100 : 0;
+    return { id: r.cfg.id, name: r.cfg.ticker, pct: parseFloat(pct.toFixed(3)), color: r.cfg.color, tokens: r.tokensRemoved, note: r.tokensRemovedNote };
+  });
+
+  // ── Fee share ──────────────────────────────────────────────
+  const feeShare = rows.map((r) => {
+    const eff = r.effRate !== null ? Math.round(r.effRate * 100) : null;
+    return { name: r.cfg.ticker, Buybacks: eff ?? 0, "Other / undisclosed": eff !== null ? 100 - eff : 0, policy: r.cfg.policyBuybackRate };
+  });
+
+  // ── CSV export ─────────────────────────────────────────────
+  const exportCsv = () => {
+    if (!buybacks) return;
+    const lines = ["date,token,usd,tokens,tx_count,quality"];
+    for (const b of buybacks) for (const d of b.daily) lines.push(`${d.date},${tickerOf(b.tokenId)},${d.usd.toFixed(2)},${d.tokens.toFixed(4)},${d.txCount},${b.quality}`);
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `perp-dex-buybacks-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
 
-  const section = {
-    ...card,
-    marginBottom: "24px",
-  };
+  const nextLiveIn = liveAt ? Math.max(0, liveAt + LIVE_REFRESH_MS - now) : 0;
+  const errorCount = live?.reduce((s, d) => s + d.errors.length, 0) ?? 0;
 
-  const labelStyle = {
-    fontSize: "11px",
-    color: "var(--text-secondary)",
-    textTransform: "uppercase" as const,
-    letterSpacing: "0.06em",
-    marginBottom: "2px",
-  };
+  // ─────────────────────────────────────────────────────────────
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "var(--bg-primary)",
-        color: "var(--text-primary)",
-        padding: "24px",
-        maxWidth: "1400px",
-        margin: "0 auto",
-      }}
-    >
-      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+    <div style={{ minHeight: "100vh", background: "var(--bg-primary)", color: "var(--text-primary)", padding: "24px", maxWidth: "1400px", margin: "0 auto" }}>
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} } @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
 
-      {/* Page header */}
-      <div style={{ marginBottom: "28px" }}>
-        <h1 style={{ fontSize: "28px", fontWeight: 800, margin: 0 }}>
-          Perp DEX Tokenomics Comparison
-        </h1>
-        <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginTop: "8px" }}>
-          Market cap, FDV, fee revenue, buyback programs, and P/E ratios for Hyperliquid, Lighter, Aster, and EdgeX.
-          Live prices and fees from CoinGecko & DefiLlama. Buyback history seeded from public on-chain data.
-        </p>
-      </div>
-
-      {/* ── SECTION A: Header metrics cards ───────────────────── */}
-      <div style={{ ...section }}>
-        <SectionHeader title="Protocol Overview" subtitle="Live market data + seeded buyback totals" />
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
-          {records.map(({ cfg, live, totals }) => {
-            const price = live?.price;
-            const mktCap = live?.marketCap;
-            const fdv = live?.fdv;
-            const fees30d = live?.fees30d;
-            const annRev = fees30d != null ? fees30d * (365 / 30) : null;
-            const isPartial = cfg.dataQuality === "partial";
-
-            return (
-              <div key={cfg.id} style={{ ...card, borderLeft: `3px solid ${cfg.color}` }}>
-                {/* Name + badge */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontSize: "16px", fontWeight: 700 }}>{cfg.name}</span>
-                    <span style={{
-                      fontSize: "11px", fontWeight: 600, padding: "2px 7px", borderRadius: "999px",
-                      background: cfg.color + "22", color: cfg.color,
-                    }}>
-                      {cfg.ticker}
-                    </span>
-                  </div>
-                  {isPartial ? (
-                    <span style={{ fontSize: "10px", color: "#f59e0b", padding: "2px 6px", borderRadius: "4px", background: "#f59e0b18" }}>
-                      ~ Estimated
-                    </span>
-                  ) : (
-                    <span style={{ fontSize: "10px", color: "#4ade80", padding: "2px 6px", borderRadius: "4px", background: "#4ade8018" }}>
-                      Full data
-                    </span>
-                  )}
-                </div>
-
-                {/* Price / Mkt Cap / FDV */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px", marginBottom: "12px" }}>
-                  {[
-                    { label: "Price", value: price != null ? `$${price.toFixed(2)}` : null },
-                    { label: "Circ. Mkt Cap", value: fmt$(mktCap) },
-                    { label: "FDV", value: fmt$(fdv) },
-                  ].map(({ label, value }) => (
-                    <div key={label}>
-                      <div style={labelStyle}>{label}</div>
-                      <div style={{ fontSize: "14px", fontWeight: 600 }}>
-                        {loading ? <Skeleton /> : (value === "—" || value === null ? "—" : value)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Fees / Revenue */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "12px", paddingTop: "10px", borderTop: "1px solid var(--border)" }}>
-                  {[
-                    { label: "30d Fees", value: fmt$(fees30d) },
-                    { label: "Annualized Rev.", value: fmt$(annRev) },
-                  ].map(({ label, value }) => (
-                    <div key={label}>
-                      <div style={labelStyle}>{label}</div>
-                      <div style={{ fontSize: "14px", fontWeight: 600 }}>
-                        {loading ? <Skeleton /> : value}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Buyback stats (seeded) */}
-                <div style={{ paddingTop: "10px", borderTop: "1px solid var(--border)" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "6px" }}>
-                    <div>
-                      <div style={labelStyle}>Buyback Rate</div>
-                      <div style={{ fontSize: "14px", fontWeight: 600, color: cfg.color }}>
-                        {fmtPct(cfg.buybackRatePct)}
-                      </div>
-                    </div>
-                    <div>
-                      <div style={labelStyle}>Total USD Spent</div>
-                      <div style={{ fontSize: "14px", fontWeight: 600 }}>
-                        {totals.totalUsdSpent > 0 ? fmtCompact(totals.totalUsdSpent) : "—"}
-                      </div>
-                    </div>
-                  </div>
-                  <div>
-                    <div style={labelStyle}>Total Tokens Bought Back</div>
-                    <div style={{ fontSize: "13px", fontWeight: 600 }}>
-                      {totals.totalTokensBoughtBack > 0
-                        ? `${fmtTokens(totals.totalTokensBoughtBack)} ${cfg.ticker}`
-                        : "—"}
-                    </div>
-                  </div>
-                  <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--text-secondary)", fontStyle: "italic" }}>
-                    {cfg.feeStructureNote}
-                  </div>
-                  <div style={{ display: "flex", gap: "12px", marginTop: "6px", flexWrap: "wrap" }}>
-                    {totals.sourceUrl && (
-                      <a
-                        href={totals.sourceUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{ fontSize: "10px", color: "#60a5fa" }}
-                      >
-                        Dashboard ↗
-                      </a>
-                    )}
-                    {totals.walletUrl && totals.walletUrl !== totals.sourceUrl && (
-                      <a
-                        href={totals.walletUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{ fontSize: "10px", color: "#34d399" }}
-                      >
-                        On-chain ↗
-                      </a>
-                    )}
-                    {cfg.explorerUrl && (
-                      <a
-                        href={cfg.explorerUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{ fontSize: "10px", color: "#a78bfa" }}
-                      >
-                        Wallet ↗
-                      </a>
-                    )}
-                  </div>
-                  {cfg.buybackWallet && (
-                    <div style={{ fontSize: "9px", color: "var(--text-secondary)", marginTop: "4px", fontFamily: "monospace", letterSpacing: "-0.02em", wordBreak: "break-all" as const }}>
-                      {cfg.buybackWallet}
-                    </div>
-                  )}
-                  <div style={{ fontSize: "10px", color: "var(--text-secondary)", marginTop: "4px" }}>
-                    Updated {totals.lastUpdated}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+      {/* ── Header ─────────────────────────────────────────── */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "24px" }}>
+        <div>
+          <h1 style={{ fontSize: "28px", fontWeight: 800, margin: 0 }}>Perp DEX Tokenomics</h1>
+          <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginTop: "8px", maxWidth: "900px" }}>
+            Hyperliquid, Lighter, Aster and edgeX. Prices from CoinGecko. Fees and buybacks from DefiLlama adapters and, for HYPE, the Assistance Fund wallet itself. Every dollar figure on this page is live.
+          </p>
+        </div>
+        <div style={{ ...card, padding: "10px 14px", minWidth: "240px", fontSize: "11px", color: "var(--text-secondary)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+            <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: liveErr ? "#f87171" : "#4ade80", animation: "blink 2s infinite" }} />
+            <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{liveErr ? "Market feed error" : "Auto-refresh on"}</span>
+          </div>
+          <div>Market data: {liveAt ? `${timeAgo(liveAt)} · next in ${mmss(nextLiveIn)}` : "loading…"}</div>
+          <div>Buyback series: {buybacksAt ? timeAgo(buybacksAt) : "loading…"} · hourly</div>
+          {errorCount > 0 && <div style={{ color: "#f59e0b", marginTop: "2px" }}>{errorCount} upstream warning{errorCount > 1 ? "s" : ""} (see Methodology)</div>}
+          <div style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
+            <button onClick={() => { fetchLive(); fetchBuybacks(); }} style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "4px", border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", cursor: "pointer" }}>Refresh now</button>
+            <button onClick={exportCsv} disabled={!buybacks} style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "4px", border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", cursor: buybacks ? "pointer" : "default", opacity: buybacks ? 1 : 0.5 }}>Export CSV</button>
+          </div>
         </div>
       </div>
 
-      {/* ── SECTION B: P/E Comparison ──────────────────────────── */}
-      <div style={{ ...section }}>
-        <SectionHeader
-          title="P/E Ratio Comparison"
-          subtitle="P/E = Market Cap ÷ (Annualized Revenue × Buyback Rate). Formula via Arthur Hayes '$HYPE Man' (March 2026)."
-        />
+      {/* ── 1. Market Pulse ─────────────────────────────────── */}
+      <div style={section}>
+        <SectionHeader title="Market Pulse" subtitle="Price action, distance from the high, 24h volume and the 90-day daily fee trend." />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px" }}>
+          {rows.map(({ cfg, l }) => (
+            <div key={cfg.id} style={{ ...card, borderTop: `3px solid ${cfg.color}`, padding: "12px 14px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
+                <div style={{ display: "flex", gap: "8px", alignItems: "baseline" }}>
+                  <span style={{ fontWeight: 700, fontSize: "15px" }}>{cfg.ticker}</span>
+                  <span style={subtle}>{cfg.name}{l?.marketCapRank ? ` · #${l.marketCapRank}` : ""}</span>
+                </div>
+                <span style={{ fontSize: "20px", fontWeight: 700 }}>{loading ? <Skeleton w="70px" /> : l?.price != null ? fmtPrice(l.price) : "—"}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "4px", marginBottom: "8px" }}>
+                <ChangeBadge v={l?.priceChange24h ?? null} label="24h" />
+                <ChangeBadge v={l?.priceChange7d ?? null} label="7d" />
+                <ChangeBadge v={l?.priceChange30d ?? null} label="30d" />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px", marginBottom: "6px" }}>
+                <div>
+                  <div style={labelStyle}>From ATH</div>
+                  <div style={{ fontSize: "13px", fontWeight: 600 }}>
+                    {l?.athChangePct != null ? fmtPct(l.athChangePct, 1) : "—"}
+                    {l?.ath != null && <span style={{ ...subtle, marginLeft: "6px" }}>{fmtPrice(l.ath)}{l.athDate ? ` · ${l.athDate.slice(0, 10)}` : ""}</span>}
+                  </div>
+                </div>
+                <div>
+                  <div style={labelStyle}>24h Volume</div>
+                  <div style={{ fontSize: "13px", fontWeight: 600 }}>{fmt$(l?.volume24h)}</div>
+                </div>
+              </div>
+              <div style={{ ...labelStyle, marginTop: "4px" }}>Daily fees · 90d {l?.fees7d != null && <span style={{ textTransform: "none", letterSpacing: 0 }}>· 7d {fmtCompact(l.fees7d)}</span>}</div>
+              {l ? <Sparkline data={l.feesDaily} color={cfg.color} /> : <div style={{ height: "36px" }} />}
+            </div>
+          ))}
+        </div>
+      </div>
 
-        {/* Table */}
-        <div style={{ overflowX: "auto", marginBottom: "24px" }}>
+      {/* ── 2. Commentary ───────────────────────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: "24px", marginBottom: "24px" }}>
+        <div style={card}>
+          <SectionHeader title="What the numbers say" subtitle="Generated from the live figures on this page each time it refreshes. No hand editing." />
+          {insights.length === 0 ? <div style={subtle}>Waiting for data…</div> : (
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "8px" }}>
+              {insights.map((i, idx) => {
+                const cfg = TOKEN_CONFIGS.find((c) => c.id === i.tokenId);
+                const dot = i.tone === "up" ? "#4ade80" : i.tone === "down" ? "#f87171" : i.tone === "flat" ? "#9ca3af" : "#60a5fa";
+                return (
+                  <li key={idx} style={{ display: "flex", gap: "10px", fontSize: "13px", lineHeight: 1.5 }}>
+                    <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: dot, marginTop: "6px", flexShrink: 0 }} />
+                    <span>
+                      {cfg && <span style={{ color: cfg.color, fontWeight: 700, marginRight: "6px" }}>{cfg.ticker}</span>}
+                      {!cfg && <span style={{ color: "#60a5fa", fontWeight: 700, marginRight: "6px" }}>GROUP</span>}
+                      {i.text}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        <div style={card}>
+          <SectionHeader
+            title="Analyst notes"
+            subtitle={`Hand-written context with sources. Updated ${ANALYST_NOTES_UPDATED}.`}
+            right={<PillGroup options={[{ label: "All", value: "all" }, { label: "Market", value: "market" }, ...TOKEN_CONFIGS.map((c) => ({ label: c.ticker, value: c.id }))]} value={noteFilter} onChange={setNoteFilter} />}
+          />
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "10px" }}>
+            {ANALYST_NOTES.filter((n) => noteFilter === "all" || n.tokenId === noteFilter).map((n, idx) => {
+              const cfg = TOKEN_CONFIGS.find((c) => c.id === n.tokenId);
+              return (
+                <li key={idx} style={{ fontSize: "13px", lineHeight: 1.5, paddingLeft: "10px", borderLeft: `2px solid ${cfg?.color ?? "#60a5fa"}` }}>
+                  <span style={{ color: cfg?.color ?? "#60a5fa", fontWeight: 700, marginRight: "6px" }}>{cfg?.ticker ?? "MARKET"}</span>
+                  {n.text}
+                  <a href={n.sourceUrl} target="_blank" rel="noopener noreferrer" style={{ ...subtle, color: "#60a5fa", marginLeft: "6px", textDecoration: "none" }}>{n.sourceLabel} ↗</a>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </div>
+
+      {/* ── 3. Protocol Overview ────────────────────────────── */}
+      <div style={section}>
+        <SectionHeader title="Protocol Overview" subtitle="Valuation, fee flow and cumulative buybacks. Policy rate is what the protocol says it does. Effective rate is DefiLlama buybacks ÷ fees over the last 30 days." />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "16px" }}>
+          {rows.map(({ cfg, l, bb, reported, effRate, bbYield, tokensRemoved, tokensRemovedNote, usdAllTime, usdAllTimeNote }) => (
+            <div key={cfg.id} style={{ ...card, borderLeft: `3px solid ${cfg.color}` }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ fontSize: "16px", fontWeight: 700 }}>{cfg.name}</span>
+                  <span style={{ fontSize: "11px", fontWeight: 600, padding: "2px 7px", borderRadius: "999px", background: cfg.color + "22", color: cfg.color }}>{cfg.ticker}</span>
+                </div>
+                {bb && <QualityBadge q={bb.quality} />}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px", marginBottom: "10px" }}>
+                {[
+                  { label: "Circ. Mkt Cap", value: fmt$(l?.marketCap) },
+                  { label: "FDV", value: fmt$(l?.fdv) },
+                  { label: "Circ / Total", value: l?.circulatingSupply && l?.totalSupply ? `${((l.circulatingSupply / l.totalSupply) * 100).toFixed(0)}%` : "—" },
+                ].map(({ label, value }) => (
+                  <div key={label}><div style={labelStyle}>{label}</div><div style={{ fontSize: "14px", fontWeight: 600 }}>{loading ? <Skeleton /> : value}</div></div>
+                ))}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px", paddingTop: "10px", borderTop: "1px solid var(--border)", marginBottom: "10px" }}>
+                {[
+                  { label: "30d Fees", value: fmt$(l?.fees30d) },
+                  { label: "30d Buybacks", value: fmt$(l?.buyback30d) },
+                  { label: "Ann. Buybacks", value: fmt$(annualize30d(l?.buyback30d ?? null)) },
+                ].map(({ label, value }) => (
+                  <div key={label}><div style={labelStyle}>{label}</div><div style={{ fontSize: "14px", fontWeight: 600 }}>{loading ? <Skeleton /> : value}</div></div>
+                ))}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px", paddingTop: "10px", borderTop: "1px solid var(--border)", marginBottom: "10px" }}>
+                <div><div style={labelStyle}>Policy Rate</div><div style={{ fontSize: "14px", fontWeight: 600, color: cfg.color }}>{cfg.policyBuybackRate !== null ? `${Math.round(cfg.policyBuybackRate * 100)}%` : "n/d"}</div></div>
+                <div><div style={labelStyle}>Effective 30d</div><div style={{ fontSize: "14px", fontWeight: 600 }}>{loading ? <Skeleton w="40px" /> : effRate !== null ? `${Math.round(effRate * 100)}%` : "—"}</div></div>
+                <div><div style={labelStyle}>Buyback Yield</div><div style={{ fontSize: "14px", fontWeight: 600 }}>{loading ? <Skeleton w="40px" /> : bbYield !== null ? `${(bbYield * 100).toFixed(1)}%` : "—"}</div></div>
+              </div>
+
+              <div style={{ paddingTop: "10px", borderTop: "1px solid var(--border)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                  <div>
+                    <div style={labelStyle}>Total USD Bought</div>
+                    <div style={{ fontSize: "14px", fontWeight: 600 }}>{loading ? <Skeleton /> : fmt$(usdAllTime)}</div>
+                    <div style={{ ...subtle, fontSize: "10px" }}>{usdAllTimeNote}</div>
+                    {reported.usdSpent && cfg.id !== "hyperliquid" && <div style={{ ...subtle, fontSize: "10px" }}>Reported: {fmtCompact(reported.usdSpent)} ({reported.usdSpentLabel})</div>}
+                  </div>
+                  <div>
+                    <div style={labelStyle}>Tokens Removed</div>
+                    <div style={{ fontSize: "14px", fontWeight: 600 }}>{tokensRemoved !== null ? `${fmtTokens(tokensRemoved)} ${cfg.ticker}` : "—"}</div>
+                    <div style={{ ...subtle, fontSize: "10px" }}>{tokensRemovedNote}</div>
+                  </div>
+                </div>
+                <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--text-secondary)", lineHeight: 1.5 }}>{cfg.policyNote}</div>
+                <div style={{ display: "flex", gap: "12px", marginTop: "6px", flexWrap: "wrap" }}>
+                  {cfg.explorerUrl && <a href={cfg.explorerUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "10px", color: "#34d399" }}>On-chain ↗</a>}
+                  {cfg.docsUrl && <a href={cfg.docsUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "10px", color: "#60a5fa" }}>Docs ↗</a>}
+                  <a href={`https://defillama.com/protocol/${cfg.defiLlamaSlug}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: "10px", color: "#a78bfa" }}>DefiLlama ↗</a>
+                </div>
+                {cfg.buybackWallet && <div style={{ fontSize: "9px", color: "var(--text-secondary)", marginTop: "4px", fontFamily: "monospace", wordBreak: "break-all" }}>{cfg.buybackWallet}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── 4. Valuation ────────────────────────────────────── */}
+      <div style={section}>
+        <SectionHeader
+          title="Valuation on Buyback Earnings"
+          subtitle="P/E = valuation ÷ annualized buybacks (30-day DefiLlama holders revenue × 365/30). P/S uses total fees. Buyback yield is the inverse of P/E. TradFi comps for scale."
+          right={<PillGroup options={[{ label: "Market Cap", value: "mcap" }, { label: "FDV", value: "fdv" }]} value={valuationBasis} onChange={setValuationBasis} />}
+        />
+        <div style={{ overflowX: "auto", marginBottom: "20px" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
             <thead>
               <tr style={{ color: "var(--text-secondary)", fontSize: "11px", textTransform: "uppercase" }}>
-                {["Protocol", "Mkt Cap", "Ann. Revenue", "Buyback Rate", "Eff. Earnings", "P/E", "vs CME (26x)", "vs HOOD (35x)", "vs COIN (40x)"].map((h) => (
-                  <th key={h} style={{ padding: "8px 12px", textAlign: "left", borderBottom: "1px solid var(--border)", fontWeight: 500 }}>{h}</th>
+                {["Protocol", valuationBasis === "mcap" ? "Mkt Cap" : "FDV", "Ann. Fees", "Ann. Buybacks", "Eff. Rate", "P/S", "P/E", "Yield", "vs CME 26x", "vs HOOD 35x", "vs COIN 40x"].map((h) => (
+                  <th key={h} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "1px solid var(--border)", fontWeight: 500, whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {records.map(({ cfg }) => {
-                const mktCap = getMktCap(cfg.id);
-                const annRev = getAnnualizedRevenue(cfg.id);
-                const effEarnings = annRev != null ? annRev * cfg.buybackRatePct : null;
-                const circ = getCirc(cfg.id);
-                const price = getPrice(cfg.id);
-                const pe = (price && annRev) ? calcPE(circ, price, annRev, cfg.buybackRatePct) : null;
-                const peFinite = pe !== null && isFinite(pe) ? pe : null;
-
+              {rows.map(({ cfg, valuation, annFees, annBB, effRate, pe, ps, bbYield }) => {
+                const peF = pe !== null && isFinite(pe) ? pe : null;
                 return (
                   <tr key={cfg.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                    <td style={{ padding: "10px 12px" }}>
+                    <td style={{ padding: "10px" }}>
                       <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                        <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: cfg.color, flexShrink: 0 }} />
+                        <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: cfg.color }} />
                         <span style={{ fontWeight: 600 }}>{cfg.name}</span>
-                        <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{cfg.ticker}</span>
+                        <span style={subtle}>{cfg.ticker}</span>
                       </span>
                     </td>
-                    <td style={{ padding: "10px 12px" }}>{loading ? <Skeleton /> : fmt$(mktCap)}</td>
-                    <td style={{ padding: "10px 12px" }}>{loading ? <Skeleton /> : fmt$(annRev)}</td>
-                    <td style={{ padding: "10px 12px", color: cfg.color, fontWeight: 600 }}>{fmtPct(cfg.buybackRatePct)}</td>
-                    <td style={{ padding: "10px 12px" }}>{loading ? <Skeleton /> : fmt$(effEarnings)}</td>
-                    <td style={{ padding: "10px 12px", fontWeight: 700, fontSize: "15px", color: peFinite !== null ? (peFinite < 26 ? "#4ade80" : peFinite < 40 ? "#facc15" : "#f87171") : "var(--text-secondary)" }}>
-                      {loading ? <Skeleton /> : fmtPE(pe)}
-                    </td>
+                    <td style={{ padding: "10px" }}>{loading ? <Skeleton /> : fmt$(valuation)}</td>
+                    <td style={{ padding: "10px" }}>{loading ? <Skeleton /> : fmt$(annFees)}</td>
+                    <td style={{ padding: "10px" }}>{loading ? <Skeleton /> : fmt$(annBB)}</td>
+                    <td style={{ padding: "10px", color: cfg.color, fontWeight: 600 }}>{loading ? <Skeleton w="40px" /> : effRate !== null ? `${Math.round(effRate * 100)}%` : "—"}</td>
+                    <td style={{ padding: "10px" }}>{loading ? <Skeleton w="40px" /> : fmtPE(ps)}</td>
+                    <td style={{ padding: "10px", fontWeight: 700, fontSize: "15px", color: peF !== null ? (peF < 26 ? "#4ade80" : peF < 40 ? "#facc15" : "#f87171") : "var(--text-secondary)" }}>{loading ? <Skeleton /> : fmtPE(pe)}</td>
+                    <td style={{ padding: "10px" }}>{loading ? <Skeleton w="40px" /> : bbYield !== null ? `${(bbYield * 100).toFixed(1)}%` : "—"}</td>
                     {[26, 35, 40].map((comp) => {
-                      const diff = peFinite !== null ? ((peFinite - comp) / comp * 100) : null;
-                      return (
-                        <td key={comp} style={{ padding: "10px 12px", fontSize: "12px", color: diff !== null ? (diff < 0 ? "#4ade80" : "#f87171") : "var(--text-secondary)" }}>
-                          {loading ? <Skeleton w="50px" /> : (diff !== null ? `${diff > 0 ? "+" : ""}${diff.toFixed(0)}%` : "—")}
-                        </td>
-                      );
+                      const diff = peF !== null ? ((peF - comp) / comp) * 100 : null;
+                      return <td key={comp} style={{ padding: "10px", fontSize: "12px", color: diff !== null ? (diff < 0 ? "#4ade80" : "#f87171") : "var(--text-secondary)" }}>{loading ? <Skeleton w="50px" /> : diff !== null ? fmtPct(diff, 0, true) : "—"}</td>;
                     })}
                   </tr>
                 );
               })}
-              {/* TradFi comps as reference rows */}
-              {TRADFI_COMPS.map((comp) => (
-                <tr key={comp.ticker} style={{ borderBottom: "1px solid var(--border)", opacity: 0.5 }}>
-                  <td style={{ padding: "10px 12px", color: "var(--text-secondary)", fontStyle: "italic" }}>
-                    {comp.label} ({comp.ticker})
-                  </td>
-                  <td colSpan={4} style={{ padding: "10px 12px", fontSize: "11px", color: "var(--text-secondary)" }}>TradFi reference comp</td>
-                  <td style={{ padding: "10px 12px", fontWeight: 600, color: "var(--text-secondary)" }}>{comp.pe}x</td>
-                  <td colSpan={3} />
+              {TRADFI_COMPS.map((c) => (
+                <tr key={c.ticker} style={{ borderBottom: "1px solid var(--border)", opacity: 0.55 }}>
+                  <td style={{ padding: "10px", color: "var(--text-secondary)", fontStyle: "italic" }}>{c.label} ({c.ticker})</td>
+                  <td colSpan={5} style={{ padding: "10px", fontSize: "11px", color: "var(--text-secondary)" }}>TradFi reference, trailing GAAP P/E</td>
+                  <td style={{ padding: "10px", fontWeight: 600, color: "var(--text-secondary)" }}>{c.pe}x</td>
+                  <td colSpan={4} />
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-
-        {/* P/E Bar chart */}
-        <ResponsiveContainer width="100%" height={280}>
-          <BarChart data={peData.filter((d) => d.pe !== null)} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={rows.filter((r) => r.pe !== null && isFinite(r.pe)).map((r) => ({ name: r.cfg.ticker, pe: r.pe, color: r.cfg.color }))} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
             <CartesianGrid {...CHART_GRID} />
             <XAxis dataKey="name" tick={CHART_AXIS} />
             <YAxis tick={CHART_AXIS} tickFormatter={(v) => `${v}x`} />
-            <Tooltip
-              {...TOOLTIP_STYLE}
-              formatter={(v) => [`${(v as number).toFixed(1)}x`, "P/E"]}
-            />
-            {TRADFI_COMPS.map((comp) => (
-              <ReferenceLine
-                key={comp.ticker}
-                y={comp.pe}
-                stroke="#9ca3af"
-                strokeDasharray="5 4"
-                label={{ value: `${comp.ticker} ${comp.pe}x`, fill: "#9ca3af", fontSize: 10, position: "insideTopRight" }}
-              />
-            ))}
-            <Bar dataKey="pe" name="P/E Ratio" radius={[4, 4, 0, 0]}>
-              {peData.filter((d) => d.pe !== null).map((d) => (
-                <Cell key={d.id} fill={d.color} />
-              ))}
+            <Tooltip {...TOOLTIP_STYLE} formatter={(v) => [`${(v as number).toFixed(1)}x`, "P/E"]} />
+            {TRADFI_COMPS.map((c) => <ReferenceLine key={c.ticker} y={c.pe} stroke="#9ca3af" strokeDasharray="5 4" label={{ value: `${c.ticker} ${c.pe}x`, fill: "#9ca3af", fontSize: 10, position: "insideTopRight" }} />)}
+            <Bar dataKey="pe" name="P/E" radius={[4, 4, 0, 0]}>
+              {rows.filter((r) => r.pe !== null && isFinite(r.pe)).map((r) => <Cell key={r.cfg.id} fill={r.cfg.color} />)}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>
 
-      {/* ── SECTION B2: Live On-Chain Buybacks ────────────────── */}
-      <div style={{ ...section }}>
-        {/* Header row */}
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", marginBottom: "16px" }}>
-          <div>
-            <h2 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
-              Live On-Chain Buybacks
-            </h2>
-            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "4px" }}>
-              Daily buyback activity pulled directly from on-chain sources. HYPE: HL API (public fills). Aster: BscScan burns (DefiLlama fallback). EdgeX: DefiLlama holdersRevenue (edgeX own API fallback). Lighter: DefiLlama fees proxy.
-            </p>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px", alignItems: "flex-end" }}>
-            <PillGroup
-              options={[{ label: "USD Value", value: "usd" }, { label: "Token Count", value: "tokens" }]}
-              value={liveMetric}
-              onChange={setLiveMetric}
-            />
-            <div style={{ display: "flex", gap: "8px" }}>
-              <PillGroup
-                options={[{ label: "30d", value: "30" }, { label: "60d", value: "60" }, { label: "90d", value: "90" }]}
-                value={liveDaysStr}
-                onChange={setLiveDaysStr}
-              />
-              <button
-                onClick={() => setLiveShowCumulative((v) => !v)}
-                style={{
-                  padding: "3px 10px", borderRadius: "999px", fontSize: "12px",
-                  fontWeight: liveShowCumulative ? 600 : 400,
-                  background: liveShowCumulative ? "#7c3aed" : "var(--bg-secondary)",
-                  color: liveShowCumulative ? "#fff" : "var(--text-secondary)",
-                  border: `1px solid ${liveShowCumulative ? "#7c3aed" : "var(--border)"}`,
-                  cursor: "pointer",
-                }}
-              >
-                Cumulative
-              </button>
+      {/* ── 5. Live Buybacks ────────────────────────────────── */}
+      <div style={section}>
+        <SectionHeader
+          title="Daily Buybacks"
+          subtitle="One series per protocol from DefiLlama's buyback adapters. HYPE adds token and fill counts from the Assistance Fund's own trades. Token counts for the others are USD ÷ daily close."
+          right={
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px", alignItems: "flex-end" }}>
+              <PillGroup options={[{ label: "USD", value: "usd" }, { label: "Tokens", value: "tokens" }]} value={liveMetric} onChange={setLiveMetric} />
+              <div style={{ display: "flex", gap: "8px" }}>
+                <PillGroup options={[{ label: "30d", value: "30" }, { label: "60d", value: "60" }, { label: "90d", value: "90" }, { label: "180d", value: "180" }]} value={liveWindow} onChange={setLiveWindow} />
+                <Toggle on={liveCumulative} onClick={() => setLiveCumulative((v) => !v)}>Cumulative</Toggle>
+              </div>
             </div>
-          </div>
-        </div>
+          }
+        />
 
-        {/* Summary stat row */}
         {liveSummary && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "10px", marginBottom: "16px" }}>
             {liveSummary.map((s) => {
               const cfg = TOKEN_CONFIGS.find((c) => c.id === s.tokenId)!;
-              const lb = liveBuybacks?.find((b) => b.tokenId === s.tokenId);
               return (
                 <div key={s.tokenId} style={{ background: "var(--bg-secondary)", borderRadius: "6px", padding: "10px 12px", borderLeft: `3px solid ${cfg.color}` }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px" }}>
                     <span style={{ fontWeight: 700, fontSize: "13px" }}>{cfg.ticker}</span>
-                    <span style={{
-                      fontSize: "9px", padding: "1px 5px", borderRadius: "999px", fontWeight: 600,
-                      background: s.isLive ? "#4ade8022" : "#f59e0b22",
-                      color: s.isLive ? "#4ade80" : "#f59e0b",
-                    }}>
-                      {s.isLive ? "🔴 LIVE" : "~ EST"}
-                    </span>
+                    <QualityBadge q={s.quality} />
                   </div>
-                  <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--text-primary)" }}>
-                    {s.totalUsd > 0 ? fmtCompact(s.totalUsd) : (s.totalTokens > 0 ? fmtTokens(s.totalTokens) + " " + cfg.ticker : "—")}
+                  <div style={{ fontSize: "15px", fontWeight: 700 }}>{liveMetric === "usd" ? fmtCompact(s.usd) : s.tokens > 0 ? `${fmtTokens(s.tokens)} ${cfg.ticker}` : "—"}</div>
+                  <div style={{ ...subtle, marginTop: "2px" }}>
+                    {liveDays}d · {fmtCompact(s.usd / liveDays)}/day{s.tx > 0 ? ` · ${s.tx.toLocaleString()} fills` : ""}{s.lastDate ? ` · to ${s.lastDate}` : ""}
                   </div>
-                  <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                    {liveDays}d buybacks
-                    {s.totalTx > 0 && ` · ${s.totalTx.toLocaleString()} txs`}
-                  </div>
-                  {lb?.error && (
-                    <div style={{ fontSize: "9px", color: "#f87171", marginTop: "3px", wordBreak: "break-all" as const }}>
-                      {lb.error.slice(0, 80)}
-                    </div>
-                  )}
+                  {s.error && <div style={{ fontSize: "9px", color: "#f87171", marginTop: "3px", wordBreak: "break-all" }}>{s.error.slice(0, 90)}</div>}
                 </div>
               );
             })}
           </div>
         )}
 
-        {/* Chart */}
-        {liveBuybacksLoading ? (
-          <div style={{ height: "340px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: "13px" }}>
-            Fetching on-chain data…
-          </div>
-        ) : liveBuybackChartData.length === 0 ? (
-          <div style={{ height: "200px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: "13px" }}>
-            No data returned. Check API availability.
-          </div>
+        {buybacksLoading && !buybacks ? (
+          <div style={{ height: "340px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: "13px" }}>Fetching buyback series…</div>
+        ) : liveChart.length === 0 ? (
+          <div style={{ height: "200px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: "13px" }}>No data returned.</div>
         ) : (
           <ResponsiveContainer width="100%" height={360}>
-            <ComposedChart data={liveBuybackChartData} margin={{ top: 10, right: liveShowCumulative ? 64 : 20, left: 10, bottom: 5 }}>
+            <ComposedChart data={liveChart} margin={{ top: 10, right: liveCumulative ? 64 : 20, left: 10, bottom: 5 }}>
               <CartesianGrid {...CHART_GRID} />
-              <XAxis dataKey="date" tick={{ ...CHART_AXIS, fontSize: 10 }} angle={-25} textAnchor="end" height={44} />
+              <XAxis dataKey="date" tick={{ ...CHART_AXIS, fontSize: 10 }} angle={-25} textAnchor="end" height={44} interval="preserveStartEnd" minTickGap={24} />
               <YAxis yAxisId="left" tick={CHART_AXIS} tickFormatter={liveMetric === "usd" ? fmtCompact : (v) => fmtTokens(v as number)} />
-              {liveShowCumulative && (
-                <YAxis yAxisId="right" orientation="right" tick={CHART_AXIS} tickFormatter={liveMetric === "usd" ? fmtCompact : (v) => fmtTokens(v as number)} />
-              )}
-              <Tooltip
-                {...TOOLTIP_STYLE}
-                formatter={(value, name) => {
-                  const n = name as string;
-                  const isCum = n.endsWith("_cum");
-                  const id = isCum ? n.replace("_cum", "") : n;
-                  const ticker = TOKEN_CONFIGS.find((c) => c.id === id)?.ticker ?? id;
-                  const fmt = liveMetric === "usd" ? fmtCompact(value as number) : fmtTokens(value as number);
-                  return [fmt, isCum ? `${ticker} Cumul.` : ticker];
-                }}
-              />
-              <Legend
-                formatter={(v) => {
-                  const s = v as string;
-                  const isCum = s.endsWith("_cum");
-                  const id = isCum ? s.replace("_cum", "") : s;
-                  const ticker = TOKEN_CONFIGS.find((c) => c.id === id)?.ticker ?? id;
-                  return isCum ? `${ticker} (cum.)` : ticker;
-                }}
-                wrapperStyle={{ fontSize: "11px" }}
-              />
-              {TOKEN_CONFIGS.map((cfg) => (
-                <Bar yAxisId="left" key={cfg.id} dataKey={cfg.id} name={cfg.id} fill={cfg.color} radius={[2, 2, 0, 0]} fillOpacity={0.85} stackId="daily" />
-              ))}
-              {liveShowCumulative && TOKEN_CONFIGS.map((cfg) => (
-                <Line
-                  yAxisId="right"
-                  key={`${cfg.id}_cum`}
-                  dataKey={`${cfg.id}_cum`}
-                  name={`${cfg.id}_cum`}
-                  stroke={cfg.color}
-                  strokeWidth={2}
-                  dot={false}
-                  strokeDasharray="4 2"
-                  connectNulls
-                />
-              ))}
+              {liveCumulative && <YAxis yAxisId="right" orientation="right" tick={CHART_AXIS} tickFormatter={liveMetric === "usd" ? fmtCompact : (v) => fmtTokens(v as number)} />}
+              <Tooltip {...TOOLTIP_STYLE} formatter={(value, name) => {
+                const n = String(name); const isCum = n.endsWith("_cum"); const id = isCum ? n.replace("_cum", "") : n;
+                const f = liveMetric === "usd" ? fmtCompact(value as number) : fmtTokens(value as number);
+                return [f, isCum ? `${tickerOf(id)} cumul.` : tickerOf(id)];
+              }} />
+              <Legend formatter={(v) => { const s = String(v); return s.endsWith("_cum") ? `${tickerOf(s.replace("_cum", ""))} (cum.)` : tickerOf(s); }} wrapperStyle={{ fontSize: "11px" }} />
+              {TOKEN_CONFIGS.map((cfg) => <Bar yAxisId="left" key={cfg.id} dataKey={cfg.id} name={cfg.id} fill={cfg.color} radius={[2, 2, 0, 0]} fillOpacity={0.85} stackId="daily" isAnimationActive={false} />)}
+              {liveCumulative && TOKEN_CONFIGS.map((cfg) => <Line yAxisId="right" key={`${cfg.id}_cum`} dataKey={`${cfg.id}_cum`} name={`${cfg.id}_cum`} stroke={cfg.color} strokeWidth={2} dot={false} strokeDasharray="4 2" isAnimationActive={false} />)}
             </ComposedChart>
           </ResponsiveContainer>
         )}
 
-        {/* Per-source legend */}
-        {liveBuybacks && (
+        {buybacks && (
           <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "4px" }}>
-            {liveBuybacks.map((td) => {
-              const cfg = TOKEN_CONFIGS.find((c) => c.id === td.tokenId)!;
+            {buybacks.map((b) => {
+              const cfg = TOKEN_CONFIGS.find((c) => c.id === b.tokenId)!;
               return (
-                <div key={td.tokenId} style={{ fontSize: "10px", color: "var(--text-secondary)", display: "flex", gap: "6px", alignItems: "flex-start" }}>
+                <div key={b.tokenId} style={{ fontSize: "10px", color: "var(--text-secondary)", display: "flex", gap: "6px", alignItems: "flex-start" }}>
                   <span style={{ color: cfg.color, fontWeight: 700, flexShrink: 0 }}>{cfg.ticker}:</span>
-                  <span style={{ color: td.isLive ? "#4ade80" : "#f59e0b" }}>{td.isLive ? "🔴" : "~"}</span>
-                  <span>{td.source}</span>
+                  <span>{b.source}</span>
                 </div>
               );
             })}
@@ -753,270 +679,180 @@ export default function TokenomicsPage() {
         )}
       </div>
 
-      {/* ── SECTION C: Buyback History ─────────────────────────── */}
-      <div style={{ ...section }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", marginBottom: "16px" }}>
-          <SectionHeader title="Buyback History" subtitle="Seeded from public on-chain data. Estimated values shown at 50% opacity." />
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px", alignItems: "flex-end" }}>
-            <PillGroup
-              options={[
-                { label: "USD Value", value: "usd" },
-                { label: "Token Count", value: "tokens" },
-                { label: "% Circ Supply", value: "pct_circ" },
-                { label: "% FDV Supply", value: "pct_fdv" },
-              ]}
-              value={buybackMetric}
-              onChange={setBuybackMetric}
-            />
-            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              <PillGroup
-                options={[
-                  { label: "Daily", value: "daily" },
-                  { label: "Weekly", value: "weekly" },
-                  { label: "Monthly", value: "monthly" },
-                  { label: "3-Month", value: "3month" },
-                  { label: "Yearly", value: "yearly" },
-                ]}
-                value={buybackGranularity}
-                onChange={setBuybackGranularity}
-              />
-              <button
-                onClick={() => setShowCumulative((v) => !v)}
-                style={{
-                  padding: "3px 10px",
-                  borderRadius: "999px",
-                  fontSize: "12px",
-                  fontWeight: showCumulative ? 600 : 400,
-                  background: showCumulative ? "#7c3aed" : "var(--bg-secondary)",
-                  color: showCumulative ? "#fff" : "var(--text-secondary)",
-                  border: `1px solid ${showCumulative ? "#7c3aed" : "var(--border)"}`,
-                  cursor: "pointer",
-                  whiteSpace: "nowrap" as const,
-                }}
-              >
-                + Cumulative
-              </button>
+      {/* ── 6. History ──────────────────────────────────────── */}
+      <div style={section}>
+        <SectionHeader
+          title="Buyback History"
+          subtitle="Full tracked history, aggregated. HYPE goes back to Dec 2024. Markers show burn and policy events from the timeline below."
+          right={
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px", alignItems: "flex-end" }}>
+              <PillGroup options={[{ label: "USD", value: "usd" }, { label: "Tokens", value: "tokens" }, { label: "% Circ Supply", value: "pct_circ" }]} value={histMetric} onChange={setHistMetric} />
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <PillGroup options={[{ label: "Weekly", value: "weekly" }, { label: "Monthly", value: "monthly" }, { label: "Quarterly", value: "quarterly" }, { label: "Yearly", value: "yearly" }]} value={histGranularity} onChange={setHistGranularity} />
+                <Toggle on={histCumulative} onClick={() => setHistCumulative((v) => !v)}>+ Cumulative USD</Toggle>
+                <Toggle on={histMilestones} onClick={() => setHistMilestones((v) => !v)}>Markers</Toggle>
+              </div>
             </div>
-          </div>
-        </div>
-
+          }
+        />
         <ResponsiveContainer width="100%" height={340}>
-          <ComposedChart data={buybackChartData} margin={{ top: 10, right: showCumulative ? 60 : 20, left: 10, bottom: 5 }}>
+          <ComposedChart data={histChart} margin={{ top: 24, right: histCumulative ? 60 : 20, left: 10, bottom: 5 }}>
             <CartesianGrid {...CHART_GRID} />
-            <XAxis dataKey="period" tick={CHART_AXIS} angle={-20} textAnchor="end" height={40} />
-            <YAxis
-              yAxisId="left"
-              tick={CHART_AXIS}
-              tickFormatter={
-                buybackMetric === "usd" ? fmtCompact
-                : buybackMetric === "tokens" ? (v) => fmtTokens(v as number)
-                : (v) => `${v}%`
-              }
-            />
-            {showCumulative && (
-              <YAxis
-                yAxisId="right"
-                orientation="right"
-                tick={CHART_AXIS}
-                tickFormatter={fmtCompact}
-                label={{ value: "Cumulative USD", angle: 90, position: "insideRight", fill: "#9ca3af", fontSize: 10, dx: 14 }}
-              />
-            )}
-            <Tooltip
-              {...TOOLTIP_STYLE}
-              formatter={(value, name) => {
-                const nameStr = name as string;
-                if (nameStr.endsWith("_cum")) {
-                  const id = nameStr.replace("_cum", "");
-                  const ticker = TOKEN_CONFIGS.find((c) => c.id === id)?.ticker ?? id;
-                  return [fmtCompact(value as number), `${ticker} Cumulative`];
-                }
-                const ticker = TOKEN_CONFIGS.find((c) => c.id === nameStr)?.ticker ?? nameStr;
-                if (buybackMetric === "usd") return [fmtCompact(value as number), ticker];
-                if (buybackMetric === "tokens") return [fmtTokens(value as number), ticker];
-                return [`${(value as number).toFixed(4)}%`, ticker];
-              }}
-            />
-            <Legend
-              formatter={(value) => {
-                const v = value as string;
-                if (v.endsWith("_cum")) {
-                  const id = v.replace("_cum", "");
-                  return `${TOKEN_CONFIGS.find((c) => c.id === id)?.ticker ?? id} (cum.)`;
-                }
-                return TOKEN_CONFIGS.find((c) => c.id === v)?.ticker ?? v;
-              }}
-              wrapperStyle={{ fontSize: "12px" }}
-            />
-            {TOKEN_CONFIGS.map((cfg) => (
-              <Bar yAxisId="left" key={cfg.id} dataKey={cfg.id} name={cfg.id} fill={cfg.color} radius={[3, 3, 0, 0]} fillOpacity={0.85} />
-            ))}
-            {showCumulative && TOKEN_CONFIGS.map((cfg) => (
-              <Line
-                yAxisId="right"
-                key={`${cfg.id}_cum`}
-                dataKey={`${cfg.id}_cum`}
-                name={`${cfg.id}_cum`}
-                stroke={cfg.color}
-                strokeWidth={2}
-                dot={false}
-                strokeDasharray="4 2"
-                strokeOpacity={0.9}
-              />
-            ))}
+            <XAxis dataKey="period" tick={CHART_AXIS} angle={-20} textAnchor="end" height={40} interval="preserveStartEnd" minTickGap={16} />
+            <YAxis yAxisId="left" tick={CHART_AXIS} tickFormatter={histMetric === "usd" ? fmtCompact : histMetric === "tokens" ? (v) => fmtTokens(v as number) : (v) => `${v}%`} />
+            {histCumulative && <YAxis yAxisId="right" orientation="right" tick={CHART_AXIS} tickFormatter={fmtCompact} />}
+            <Tooltip {...TOOLTIP_STYLE} formatter={(value, name) => {
+              const n = String(name);
+              if (n.endsWith("_cum")) return [fmtCompact(value as number), `${tickerOf(n.replace("_cum", ""))} cumulative`];
+              if (histMetric === "usd") return [fmtCompact(value as number), tickerOf(n)];
+              if (histMetric === "tokens") return [fmtTokens(value as number), tickerOf(n)];
+              return [`${(value as number).toFixed(3)}%`, tickerOf(n)];
+            }} />
+            <Legend formatter={(v) => { const s = String(v); return s.endsWith("_cum") ? `${tickerOf(s.replace("_cum", ""))} (cum.)` : tickerOf(s); }} wrapperStyle={{ fontSize: "12px" }} />
+            {histMarkers.map((m, i) => {
+              const cfg = TOKEN_CONFIGS.find((c) => c.id === m.tokenId)!;
+              return <ReferenceLine key={i} yAxisId="left" x={m.key} stroke={cfg.color} strokeDasharray="2 3" strokeOpacity={0.7} label={{ value: `${cfg.ticker}: ${m.title.split(":")[0]}`, fill: cfg.color, fontSize: 9, position: "top", angle: 0 }} />;
+            })}
+            {TOKEN_CONFIGS.map((cfg) => <Bar yAxisId="left" key={cfg.id} dataKey={cfg.id} name={cfg.id} fill={cfg.color} radius={[3, 3, 0, 0]} fillOpacity={0.85} isAnimationActive={false} />)}
+            {histCumulative && TOKEN_CONFIGS.map((cfg) => <Line yAxisId="right" key={`${cfg.id}_cum`} dataKey={`${cfg.id}_cum`} name={`${cfg.id}_cum`} stroke={cfg.color} strokeWidth={2} dot={false} strokeDasharray="4 2" isAnimationActive={false} />)}
           </ComposedChart>
         </ResponsiveContainer>
+        <p style={{ ...subtle, marginTop: "8px" }}>
+          Token counts before the last 365 days are unavailable for LIT, ASTER and EDGE (CoinGecko free-tier price history). HYPE token counts cover the last 90 days of fills only. Use USD for long-range comparison.
+        </p>
+      </div>
 
-        {/* Source legend */}
-        <div style={{ marginTop: "12px", display: "flex", flexWrap: "wrap", gap: "16px" }}>
-          {TOKEN_CONFIGS.map((cfg) => {
-            const events = BUYBACK_EVENTS.filter((e) => e.tokenId === cfg.id);
-            const sources = [...new Set(events.map((e) => e.source))];
+      {/* ── 7. Timeline ─────────────────────────────────────── */}
+      <div style={section}>
+        <SectionHeader
+          title="Buyback & Burn Timeline"
+          subtitle="Dated events with sources. 'Verified' means an on-chain record or primary announcement. 'Reported' means secondary press."
+          right={<PillGroup options={[{ label: "All", value: "all" }, ...TOKEN_CONFIGS.map((c) => ({ label: c.ticker, value: c.id }))]} value={timelineFilter} onChange={setTimelineFilter} />}
+        />
+        <div style={{ display: "flex", flexDirection: "column", gap: "0" }}>
+          {[...MILESTONES].filter((m) => timelineFilter === "all" || m.tokenId === timelineFilter).sort((a, b) => b.date.localeCompare(a.date)).map((m, i) => {
+            const cfg = TOKEN_CONFIGS.find((c) => c.id === m.tokenId)!;
+            const future = m.date > new Date().toISOString().slice(0, 10);
+            const kindColor = { burn: "#f87171", policy: "#60a5fa", launch: "#a78bfa", governance: "#facc15", market: "#9ca3af" }[m.kind];
             return (
-              <div key={cfg.id} style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
-                <span style={{ color: cfg.color, fontWeight: 600 }}>{cfg.ticker}:</span>{" "}
-                {sources.slice(0, 2).join(" · ")}
-                {cfg.dataQuality === "partial" && <span style={{ color: "#f59e0b" }}> (estimated)</span>}
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "110px 16px 1fr", gap: "12px", padding: "10px 0", borderBottom: "1px solid var(--border)", opacity: future ? 0.6 : 1 }}>
+                <div style={{ fontSize: "12px", color: "var(--text-secondary)", fontFamily: "monospace", paddingTop: "2px" }}>{m.date}{future ? " ·" : ""}</div>
+                <div style={{ display: "flex", justifyContent: "center", paddingTop: "5px" }}><span style={{ width: "10px", height: "10px", borderRadius: "50%", background: cfg.color, boxShadow: `0 0 0 3px ${cfg.color}22` }} /></div>
+                <div>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ color: cfg.color, fontWeight: 700, fontSize: "12px" }}>{cfg.ticker}</span>
+                    <span style={{ fontWeight: 600, fontSize: "13px" }}>{m.title}</span>
+                    <span style={{ fontSize: "9px", padding: "1px 6px", borderRadius: "999px", background: kindColor + "22", color: kindColor, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>{m.kind}</span>
+                    <span style={{ fontSize: "9px", color: m.confidence === "verified" ? "#4ade80" : "#f59e0b" }}>{m.confidence}</span>
+                  </div>
+                  <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "3px", lineHeight: 1.5 }}>
+                    {m.detail}
+                    {(m.tokens || m.usd) && <span style={{ marginLeft: "6px", color: "var(--text-primary)" }}>{m.tokens ? `${fmtTokens(m.tokens)} ${cfg.ticker}` : ""}{m.tokens && m.usd ? " · " : ""}{m.usd ? fmtCompact(m.usd) : ""}</span>}
+                    {m.sourceUrl ? <a href={m.sourceUrl} target="_blank" rel="noopener noreferrer" style={{ marginLeft: "6px", color: "#60a5fa", textDecoration: "none", fontSize: "11px" }}>{m.sourceLabel} ↗</a> : <span style={{ marginLeft: "6px", fontSize: "11px" }}>{m.sourceLabel}</span>}
+                  </div>
+                </div>
               </div>
             );
           })}
         </div>
       </div>
 
-      {/* ── SECTION D: Buyback % of Supply ─────────────────────── */}
-      <div style={{ ...section }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", marginBottom: "16px" }}>
-          <SectionHeader
-            title="Buyback as % of Supply"
-            subtitle="Total tokens bought back ÷ circulating supply (or FDV token equivalent)."
-          />
-          <PillGroup
-            options={[{ label: "Circulating Supply", value: "circ" }, { label: "FDV", value: "fdv" }]}
-            value={supplyBasis}
-            onChange={setSupplyBasis}
-          />
+      {/* ── 8. Supply % ─────────────────────────────────────── */}
+      <div style={section}>
+        <SectionHeader
+          title="Tokens Removed as % of Supply"
+          subtitle="HYPE is the fund's live balance. LIT and ASTER are the last official burn total plus tracked buys since. EDGE is tracked buybacks divided by daily price."
+          right={<PillGroup options={[{ label: "Circulating", value: "circ" }, { label: "Total Supply", value: "total" }]} value={supplyBasis} onChange={setSupplyBasis} />}
+        />
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "24px", alignItems: "start" }}>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={supplyPct} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
+              <CartesianGrid {...CHART_GRID} />
+              <XAxis dataKey="name" tick={CHART_AXIS} />
+              <YAxis tick={CHART_AXIS} tickFormatter={(v) => `${v}%`} />
+              <Tooltip {...TOOLTIP_STYLE} formatter={(v, _n, item) => [`${(v as number).toFixed(2)}%`, `${(item as { payload?: { name?: string } })?.payload?.name ?? ""} removed`]} />
+              <Bar dataKey="pct" name="% removed" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                {supplyPct.map((d) => <Cell key={d.id} fill={d.color} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {supplyPct.map((d) => (
+              <div key={d.id} style={{ fontSize: "12px", paddingLeft: "8px", borderLeft: `2px solid ${d.color}` }}>
+                <span style={{ color: d.color, fontWeight: 700 }}>{d.name}</span> {d.tokens !== null ? fmtTokens(d.tokens) : "—"} · {d.pct.toFixed(2)}%
+                <div style={{ ...subtle, fontSize: "10px" }}>{d.note}</div>
+              </div>
+            ))}
+          </div>
         </div>
-
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={supplyPctData} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
-            <CartesianGrid {...CHART_GRID} />
-            <XAxis dataKey="name" tick={CHART_AXIS} />
-            <YAxis tick={CHART_AXIS} tickFormatter={(v) => `${v}%`} />
-            <Tooltip
-              {...TOOLTIP_STYLE}
-              formatter={(v, _name, item) => {
-                const cfg = TOKEN_CONFIGS.find((c) => c.id === (item as { payload?: { id?: string } })?.payload?.id);
-                return [`${(v as number).toFixed(4)}%`, `${cfg?.ticker ?? ""} bought back`];
-              }}
-            />
-            <Bar dataKey="pct" name="% Bought Back" radius={[4, 4, 0, 0]}>
-              {supplyPctData.map((d) => (
-                <Cell key={d.id} fill={d.color} fillOpacity={TOKEN_CONFIGS.find((c) => c.id === d.id)?.dataQuality === "partial" ? 0.55 : 0.9} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-
-        <p style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "10px" }}>
-          Basis: {supplyBasis === "circ" ? "Circulating supply (live from CoinGecko, seed fallback)" : "FDV token equivalent (FDV ÷ current price)"}.
-          Faded bars = estimated buyback data. Seed data as of 2026-03-31.
-        </p>
       </div>
 
-      {/* ── SECTION E: Revenue & Fees ───────────────────────────── */}
-      <div style={{ ...section }}>
-        <SectionHeader title="Revenue & Fee Distribution" subtitle="Live 30-day fees from DefiLlama. Fee distribution from protocol documentation." />
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
-          {/* 30d Fees bar chart */}
+      {/* ── 9. Fees ─────────────────────────────────────────── */}
+      <div style={section}>
+        <SectionHeader title="Fees and Where They Go" subtitle="Left: 30-day fees, live. Right: share of those fees that DefiLlama measured as buybacks over the same window. Policy rates are shown for comparison." />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: "24px" }}>
           <div>
-            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "8px", fontWeight: 600 }}>
-              30-Day Fees (Live)
-            </p>
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "8px", fontWeight: 600 }}>30-Day Fees</p>
             <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={feeCompData} margin={{ top: 5, right: 10, left: 5, bottom: 5 }}>
+              <BarChart data={rows.map((r) => ({ name: r.cfg.ticker, fees: r.l?.fees30d ?? 0, buybacks: r.l?.buyback30d ?? 0, color: r.cfg.color }))} margin={{ top: 5, right: 10, left: 5, bottom: 5 }}>
                 <CartesianGrid {...CHART_GRID} />
                 <XAxis dataKey="name" tick={CHART_AXIS} />
                 <YAxis tick={CHART_AXIS} tickFormatter={fmtCompact} />
-                <Tooltip {...TOOLTIP_STYLE} formatter={(v) => [fmtCompact(v as number), "30d Fees"]} />
-                <Bar dataKey="fees30d" name="30d Fees" radius={[4, 4, 0, 0]}>
-                  {feeCompData.map((d) => (
-                    <Cell key={d.name} fill={d.color} />
-                  ))}
+                <Tooltip {...TOOLTIP_STYLE} formatter={(v, n) => [fmtCompact(v as number), n === "fees" ? "30d fees" : "30d buybacks"]} />
+                <Legend wrapperStyle={{ fontSize: "11px" }} formatter={(v) => (v === "fees" ? "Fees" : "Buybacks")} />
+                <Bar dataKey="fees" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                  {rows.map((r) => <Cell key={r.cfg.id} fill={r.cfg.color} fillOpacity={0.45} />)}
+                </Bar>
+                <Bar dataKey="buybacks" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                  {rows.map((r) => <Cell key={r.cfg.id} fill={r.cfg.color} />)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-            {loading && (
-              <p style={{ fontSize: "11px", color: "var(--text-secondary)", textAlign: "center", marginTop: "4px" }}>
-                Loading live data...
-              </p>
-            )}
           </div>
-
-          {/* Fee distribution stacked */}
           <div>
-            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "8px", fontWeight: 600 }}>
-              Fee Distribution (% of Total Fees)
-            </p>
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "8px", fontWeight: 600 }}>Effective Buyback Share of Fees (30d)</p>
             <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={feeDistData} margin={{ top: 5, right: 10, left: 5, bottom: 5 }}>
+              <BarChart data={feeShare} margin={{ top: 5, right: 10, left: 5, bottom: 5 }}>
                 <CartesianGrid {...CHART_GRID} />
                 <XAxis dataKey="name" tick={CHART_AXIS} />
                 <YAxis tick={CHART_AXIS} tickFormatter={(v) => `${v}%`} domain={[0, 100]} />
-                <Tooltip {...TOOLTIP_STYLE} formatter={(v, name) => [`${v}%`, name]} />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(v, n, item) => {
+                  const p = (item as { payload?: { policy?: number | null } })?.payload?.policy;
+                  return [`${v}%${n === "Buybacks" && p != null ? ` (policy ${Math.round(p * 100)}%)` : ""}`, String(n)];
+                }} />
                 <Legend wrapperStyle={{ fontSize: "11px" }} />
-                <Bar dataKey="Buyback" stackId="a" fill="#4ade80" radius={[0, 0, 0, 0]} />
-                <Bar dataKey="LP Rewards" stackId="a" fill="#60a5fa" />
-                <Bar dataKey="Treasury" stackId="a" fill="#9ca3af" />
-                <Bar dataKey="Other" stackId="a" fill="#374151" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="Buybacks" stackId="a" fill="#4ade80" isAnimationActive={false} />
+                <Bar dataKey="Other / undisclosed" stackId="a" fill="#374151" radius={[4, 4, 0, 0]} isAnimationActive={false} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
       </div>
 
-      {/* ── Footer / Methodology ────────────────────────────────── */}
-      <div
-        style={{
-          ...card,
-          marginBottom: "32px",
-          fontSize: "12px",
-          color: "var(--text-secondary)",
-          lineHeight: "1.7",
-        }}
-      >
-        <h3 style={{ fontWeight: 700, color: "var(--text-primary)", marginBottom: "10px", fontSize: "14px" }}>
-          Methodology & Data Sources
-        </h3>
+      {/* ── Methodology ─────────────────────────────────────── */}
+      <div style={{ ...card, marginBottom: "32px", fontSize: "12px", color: "var(--text-secondary)", lineHeight: 1.7 }}>
+        <h3 style={{ fontWeight: 700, color: "var(--text-primary)", marginBottom: "10px", fontSize: "14px" }}>Methodology and Data Sources</h3>
         <p style={{ marginBottom: "6px" }}>
-          <strong>P/E Formula:</strong> P/E = (Circulating Supply × Price) ÷ (30-day Annualized Revenue × Buyback Rate).
-          Annualized Revenue = 30d Fees × (365/30). Framework from Arthur Hayes &quot;$HYPE Man&quot; (March 9, 2026).
-          TradFi comps: CME Group (~26x), Robinhood (~35x), Coinbase (~40x).
+          <strong>Buybacks.</strong> DefiLlama <em>holders revenue</em> per protocol. Hyperliquid: 99% of perps fees (ex builder codes) to the Assistance Fund. Lighter: LIT bought by the treasury. Aster: ASTERUSDT buy fills by the public buyback wallet on Aster Chain, burns before Feb 2 2026. edgeX: EDGE buyback allocation across v1 and v2. Parent slugs are used so spot and secondary deployments count.
         </p>
         <p style={{ marginBottom: "6px" }}>
-          <strong>Live data:</strong> Prices, market cap, and FDV from CoinGecko (IDs: hyperliquid, lighter, aster-2, edgex).
-          30-day fees from DefiLlama (slugs: hyperliquid-perps, lighter-perps, aster-perps, edgex-perps). Refreshed every 5 minutes.
+          <strong>Hyperliquid on-chain.</strong> The fund's HYPE spot balance and cost basis come from <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>spotClearinghouseState</code>. Daily fill counts and token amounts come from <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>userFillsByTime</code>, paged in 3-day windows and split when a window hits the 2,000-fill cap.
         </p>
         <p style={{ marginBottom: "6px" }}>
-          <strong>Buyback history — primary on-chain sources:</strong>{" "}
-          Hyperliquid: wallet <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>0xfefe…fefe</code> — hypurrscan.io.
-          Dec 24 2025: 85% validator vote formally burned all AF tokens. ~43M HYPE / $1.3B+ cumulative.
-          Quarterly verified totals: Q3 2025 $316.76M · Q4 2025 $255.05M · Q1 2026 $192.25M. Monthly splits proportional est.
-          Aster: buyback wallet <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>0x6648…BE0F</code> on BSC → burns to dead address.
-          266.3M ASTER bought back / $187M spent (Mar 9 2026). 176M+ permanently burned (S1–S5). Source: asterburn.info.
-          Lighter: treasury account 0 (app.lighter.xyz/explorer/accounts/0) — daily TWAP from Jan 2026. Analytics: tokenomist.ai/lighter/buyback.
-          EdgeX: first confirmed burn 2,528,370 EDGE (~$380K, April 2 2026). Token: <code style={{ fontSize: "10px", background: "#1f2937", padding: "1px 4px", borderRadius: "3px" }}>0xb007…a241</code> on Ethereum. Daily 24h burns from fee revenue.
+          <strong>Valuation.</strong> P/E = market cap (or FDV) ÷ (30-day buybacks × 365/30). P/S uses total fees. Buyback yield = annualized buybacks ÷ valuation. Effective rate = 30-day buybacks ÷ 30-day fees, capped at 100%. TradFi P/Es are approximate trailing figures for scale only.
         </p>
-        <p>
-          <strong>Caveats:</strong> Monthly HYPE figures are proportional estimates within verified quarterly totals — exact daily amounts on-chain at hypurrscan.io.
-          Lighter buyback rate (50%) is estimated — not publicly disclosed. EdgeX buyback rate (40%) is estimated.
-          ASTER S4+S5 burn USD value estimated at ~$0.22/token (price at time). S6 auto-burns ongoing daily.
-          All seed data updated May 30 2026. DYOR. Not investment advice.
+        <p style={{ marginBottom: "6px" }}>
+          <strong>Refresh.</strong> Market data every 5 minutes, buyback series hourly, both on the server and in this tab while it stays open. Analyst notes are hand-written and dated. The timeline and reported totals are static and cite their sources.
         </p>
-      </div>
-
-      <div style={{ textAlign: "center", fontSize: "11px", color: "var(--text-secondary)", marginBottom: "24px" }}>
-        Perp DEX Tokenomics Research
+        <p style={{ marginBottom: "6px" }}>
+          <strong>Known gaps.</strong> Aster's parent slug has no DefiLlama revenue series, so holders revenue stands in. Aster "buybacks" since Jun 17 2026 go to stakers, and the matching reserve burn is not counted as revenue. Lighter and edgeX do not publish a fee share. Token counts for LIT, ASTER and EDGE are derived from daily prices, not from transfers.
+        </p>
+        {live && errorCount > 0 && (
+          <p style={{ color: "#f59e0b" }}>
+            <strong>Upstream warnings this refresh:</strong> {live.flatMap((d) => d.errors.map((e) => `${tickerOf(d.tokenId)}: ${e}`)).join(" · ")}
+          </p>
+        )}
+        <p>Not investment advice.</p>
       </div>
     </div>
   );

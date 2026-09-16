@@ -10,7 +10,11 @@ npm run build    # Production build
 npm run start    # Start production server
 ```
 
-No test or lint scripts are configured.
+No test or lint scripts are configured. Use `npx tsc --noEmit` for a type pass.
+
+**Node:** use the default `node` on PATH (v26). The Homebrew `node@22` binary is broken (missing libsimdjson) and must not be used in scripts.
+
+**Deploy:** Vercel builds from `main` on GitHub (napoleon1313/slippage). Push to main = production deploy at slippagehype.vercel.app.
 
 ## Architecture
 
@@ -63,6 +67,20 @@ The dashboard supports adding assets beyond the built-in 4. Click "+" in the tab
 ### HIP-3 Growth Markets
 
 Hyperliquid's HIP-3 programme incentivises liquidity in newer/smaller markets with reduced fees. The "HIP-3 Growth Markets" section in the fee panel lets you set a per-asset taker fee override for Hyperliquid only. Priority: HIP-3 per-asset override > global exchange override > default fee.
+
+### Tokenomics page (`/tokenomics`)
+
+Rewritten Sep 2026 so every dollar figure is live. Files:
+
+- `src/lib/tokenomics.ts` — types, `TOKEN_CONFIGS` (CoinGecko id + DefiLlama parent slug per token), `MILESTONES` (dated, sourced burn/policy events), `REPORTED_TOTALS` (documented fallbacks), `ANALYST_NOTES` (hand-written, dated; refresh weekly and bump `ANALYST_NOTES_UPDATED`), valuation helpers, `generateInsights()` (rule-based commentary from live numbers).
+- `src/app/api/tokenomics/route.ts` — one batched CoinGecko `/coins/markets` call (price, 24h/7d/30d, ATH, volume, supply) with a module-level last-good cache; DefiLlama fees / revenue / **holders revenue** per token (holders revenue = fees routed to buybacks; this is the unified buyback metric); Hyperliquid `spotClearinghouseState` for the Assistance Fund's HYPE balance and cost basis. Dynamic, CDN-cached 5 min (1 min when any upstream warned).
+- `src/app/api/buybacks/route.ts` — daily buyback series. USD spine: DefiLlama `dailyHoldersRevenue` for all four. HYPE tokens/fills: `userFillsByTime` with `endTime` + `aggregateByTime`, 3-day windows split on the 2,000-fill cap. The API only serves the 10,000 most recent fills (~3 weeks), so older days derive tokens from CoinGecko daily close, as do LIT/ASTER/EDGE. `?days=` up to 730. Cached 1 hour.
+- `src/app/tokenomics/page.tsx` — Market Pulse, auto commentary + analyst notes, overview cards, P/E-P/S-yield table (market cap or FDV basis), daily buybacks (30–180d), full history (weekly→yearly, milestone markers), timeline, % supply removed, fee share. Auto-refreshes market data every 5 min and the buyback series hourly; CSV export.
+
+Data gotchas learned the hard way:
+- DefiLlama child slugs go stale: `edgex-perps` is v1 only (v2 launched Jun 2026). Use parent slugs (`hyperliquid`, `lighter`, `aster`, `edgex`). `aster` has no `dailyRevenue`; fall back to holders revenue.
+- BscScan's keyless V1 API is dead and Etherscan V2 needs a paid plan for BSC. Aster's buyback wallet also moved to Aster Chain (0xa0ed…1b60) on Jun 17 2026. Don't reintroduce a BscScan path.
+- CoinGecko free tier rate-limits hard (429) under probing. Batch calls and keep last-good caches.
 
 ### Styling
 
