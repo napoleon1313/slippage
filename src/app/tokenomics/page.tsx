@@ -226,7 +226,7 @@ export default function TokenomicsPage() {
       tokensRemoved = l.onChainTokensHeld;
       tokensRemovedNote = "Assistance Fund spot balance, on-chain";
     } else if (bb && bb.daily.some((d) => d.tokens > 0)) {
-      const since = cfg.id === "lighter" ? "2026-07-10" : cfg.id === "aster" ? "2026-08-10" : "1970-01-01";
+      const since = cfg.id === "lighter" ? "2026-09-30" : cfg.id === "aster" ? "2026-08-10" : "1970-01-01";
       const inc = bb.daily.filter((d) => d.date > since).reduce((s, d) => s + d.tokens, 0);
       const base = cfg.id === "edgex" ? 0 : (reported.tokensRemoved ?? 0);
       tokensRemoved = base + inc;
@@ -761,7 +761,7 @@ export default function TokenomicsPage() {
       <div style={section}>
         <SectionHeader
           title="Tokens Removed as % of Supply"
-          subtitle="HYPE is the fund's live balance. LIT and ASTER are the last official burn total plus tracked buys since. EDGE is tracked buybacks divided by daily price."
+          subtitle="HYPE is the fund's live balance. LIT is the two official burns plus tracked buys since Sep 30. ASTER is the Aug 10 official burn total plus tracked buys since (burns match buys 1:1). EDGE is tracked buybacks divided by daily price."
           right={<PillGroup options={[{ label: "Circulating", value: "circ" }, { label: "Total Supply", value: "total" }]} value={supplyBasis} onChange={setSupplyBasis} />}
         />
         <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "24px", alignItems: "start" }}>
